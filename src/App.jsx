@@ -5,7 +5,69 @@ import './index.css';
 // Default demo players shown when no tracker file is connected
 const DEMO_PLAYERS = [];
 
-function WorkshopBrowser({ activeInstance, setActiveInstance, instances = [], serverBuild }) {
+function ModCard({ modName, getReadableModName, setModTab, navigateToMod, searchWorkshop, removeModFromServer, cachedImg, onImageLoaded }) {
+  const workshopId = modName.startsWith('Mod_') && /^\d+$/.test(modName.substring(4)) ? modName.substring(4) : null;
+  const [imgUrl, setImgUrl] = useState(cachedImg || null);
+
+  useEffect(() => {
+    if (!cachedImg && workshopId) {
+      fetch('https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `itemcount=1&publishedfileids%5B0%5D=${workshopId}`,
+      })
+        .then(r => r.json())
+        .then(data => {
+          const url = data?.response?.publishedfiledetails?.[0]?.preview_url;
+          if (url) { setImgUrl(url); onImageLoaded(workshopId, url); }
+        })
+        .catch(() => {});
+    }
+  }, [workshopId]);
+
+  return (
+    <div
+      style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', cursor: 'pointer', transition: 'border-color 0.1s', overflow: 'hidden' }}
+      onMouseOver={(e) => e.currentTarget.style.borderColor = 'var(--accent-blue)'}
+      onMouseOut={(e) => e.currentTarget.style.borderColor = 'var(--border-color)'}
+      onClick={() => {
+        setModTab('workshop');
+        if (workshopId) navigateToMod(workshopId);
+        else searchWorkshop(getReadableModName(modName));
+      }}
+    >
+      <div style={{ width: '100%', aspectRatio: '1 / 1', background: '#0d1117', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+        {imgUrl ? (
+          <img src={imgUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} onError={() => setImgUrl(null)} />
+        ) : (
+          <div style={{ color: '#2a475e', fontSize: '0.7rem', letterSpacing: '3px', fontWeight: 'bold', userSelect: 'none' }}>NO IMG</div>
+        )}
+      </div>
+      <div style={{ padding: '10px', display: 'flex', flexDirection: 'column', gap: '5px', flex: 1 }}>
+        <div style={{ fontSize: '0.84rem', fontWeight: 'bold', color: 'var(--text-main)', wordBreak: 'break-word', lineHeight: 1.3 }}>
+          {getReadableModName(modName)}
+        </div>
+        {workshopId && (
+          <div style={{ fontSize: '0.67rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>ID: {workshopId}</div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto', paddingTop: '6px' }}>
+          <span style={{ fontSize: '0.6rem', color: 'var(--accent-green)', border: '1px solid rgba(92,126,16,0.5)', padding: '2px 6px', borderRadius: '3px' }}>ACTIVE</span>
+          <button
+            style={{ background: 'transparent', border: 'none', color: '#ff4757', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center', opacity: 0.7 }}
+            onMouseOver={(e) => { e.stopPropagation(); e.currentTarget.style.opacity = 1; }}
+            onMouseOut={(e) => e.currentTarget.style.opacity = 0.7}
+            title="Remove Mod"
+            onClick={(e) => { e.stopPropagation(); removeModFromServer(workshopId, modName, e); }}
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WorkshopBrowser({ activeInstance, setActiveInstance, instances = [], serverBuild, modTab, setModTab, notify }) {
   const webviewRef = useRef(null);
   const [currentUrl, setCurrentUrl] = useState('https://pzwiki.net/wiki/Mods');
   const [extractedModId, setExtractedModId] = useState(null);
@@ -27,6 +89,19 @@ function WorkshopBrowser({ activeInstance, setActiveInstance, instances = [], se
     setModNameCache(prev => {
       const updated = { ...prev, [idStr]: name };
       localStorage.setItem('pzsm_mod_names', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const [modImageCache, setModImageCache] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('pzsm_mod_images')) || {}; }
+    catch(e) { return {}; }
+  });
+
+  const saveImageToCache = (wId, url) => {
+    setModImageCache(prev => {
+      const updated = { ...prev, [wId]: url };
+      localStorage.setItem('pzsm_mod_images', JSON.stringify(updated));
       return updated;
     });
   };
@@ -198,19 +273,19 @@ function WorkshopBrowser({ activeInstance, setActiveInstance, instances = [], se
       try {
         const result = await window.pzAPI.addModToServer(activeInstance, workshopId, placeholderModId);
         if (result.success) {
-          alert(`Success! Added WorkshopID: ${workshopId} to [${activeInstance}]`);
+          notify(`Added WorkshopID ${workshopId} to [${activeInstance}]`, 'success');
           if (result.config) {
             if (result.config.Mods) setInstalledMods(result.config.Mods.split(';').map(m => m.trim()).filter(Boolean));
             if (result.config.WorkshopItems) setInstalledWorkshopIds(result.config.WorkshopItems.split(';').map(m => m.trim()).filter(Boolean));
           }
         } else {
-          alert(`Failed to write to [${activeInstance}]`);
+          notify(`Failed to write to [${activeInstance}]`, 'error');
         }
       } catch (err) {
-        alert('Error calling IPC: ' + err.message);
+        notify('IPC error: ' + err.message, 'error');
       }
     } else {
-      alert(`[BROWSER MODE] Mod added to ${activeInstance}: ${extractedModId}`);
+      notify(`[Browser mode] Would add ${extractedModId} to ${activeInstance}`, 'info');
     }
   };
 
@@ -231,189 +306,182 @@ function WorkshopBrowser({ activeInstance, setActiveInstance, instances = [], se
             else setInstalledWorkshopIds([]);
           }
         } else {
-          alert(`Failed to remove from [${activeInstance}]`);
+          notify(`Failed to remove from [${activeInstance}]`, 'error');
         }
       } catch (err) {
-        alert('Error calling IPC: ' + err.message);
+        notify('IPC error: ' + err.message, 'error');
       }
     }
   };
 
   return (
-    <div style={{ display: 'flex', gap: '20px', height: 'calc(100vh - 110px)' }}>
-      {/* Sidebar */}
-      {!isSidebarOpen && (
-        <div className="card" style={{ width: '40px', display: 'flex', flexDirection: 'column', gap: '0', overflow: 'hidden', padding: '0', flexShrink: 0, alignItems: 'center' }}>
-          <button 
-            style={{ width: '100%', padding: '12px 0', background: 'transparent', border: 'none', borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-            onClick={() => setIsSidebarOpen(true)}
-            title="Open Panel"
-          >
-            <Menu size={16} />
-          </button>
-          <div style={{ writingMode: 'vertical-rl', textOrientation: 'mixed', padding: '20px 0', color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: 'bold', letterSpacing: '2px', cursor: 'pointer' }} onClick={() => setIsSidebarOpen(true)}>
-            MOD MENU
-          </div>
-        </div>
-      )}
-
-      {isSidebarOpen && (
-        <div className="card" style={{ width: '300px', display: 'flex', flexDirection: 'column', gap: '0', overflow: 'hidden', padding: '0', flexShrink: 0 }}>
-          <div style={{ display: 'flex', borderBottom: '1px solid var(--border-color)', backgroundColor: 'rgba(0,0,0,0.2)' }}>
-            <div style={{ flex: 1, padding: '12px', color: 'var(--accent-green)', fontWeight: 'bold', fontSize: '0.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              INSTALLED MODS ({installedMods.length})
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 110px)' }}>
+      {/* My Mods Grid - always mounted */}
+      <div style={{ flex: 1, overflowY: 'auto', display: modTab === 'myMods' ? 'block' : 'none' }}>
+          {installedMods.length === 0 ? (
+            <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '60px', fontSize: '0.9rem' }}>
+              No mods installed in {activeInstance || 'server'}.ini
             </div>
-            <button 
-              style={{ width: '40px', background: 'transparent', border: 'none', borderLeft: '1px solid var(--border-color)', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-              onClick={() => setIsSidebarOpen(false)}
-              title="Close Panel"
-            >
-              <ChevronLeft size={16} />
-            </button>
-          </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '12px' }}>
+              {installedMods.map((modName, idx) => {
+                const wId = modName.startsWith('Mod_') && /^\d+$/.test(modName.substring(4)) ? modName.substring(4) : null;
+                return (
+                  <ModCard
+                    key={idx}
+                    modName={modName}
+                    getReadableModName={getReadableModName}
+                    setModTab={setModTab}
+                    navigateToMod={navigateToMod}
+                    searchWorkshop={searchWorkshop}
+                    removeModFromServer={removeModFromServer}
+                    cachedImg={wId ? modImageCache[wId] : null}
+                    onImageLoaded={saveImageToCache}
+                  />
+                );
+              })}
+            </div>
+          )}
+      </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', overflowY: 'auto', flex: 1 }}>
-            {installedMods.length === 0 && (
-              <div style={{ padding: '20px 15px', color: 'var(--text-muted)', fontSize: '0.8rem', textAlign: 'center' }}>
-                No mods found in {activeInstance}.ini
+      {/* Workshop Browser - always mounted so webview event listeners work from the start */}
+      <div style={{ display: modTab === 'workshop' ? 'flex' : 'none', gap: '20px', flex: 1, overflow: 'hidden' }}>
+          {/* Sidebar collapsed */}
+          {!isSidebarOpen && (
+            <div className="card" style={{ width: '40px', display: 'flex', flexDirection: 'column', gap: '0', overflow: 'hidden', padding: '0', flexShrink: 0, alignItems: 'center' }}>
+              <button
+                style={{ width: '100%', padding: '12px 0', background: 'transparent', border: 'none', borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                onClick={() => setIsSidebarOpen(true)}
+                title="Open Panel"
+              >
+                <Menu size={16} />
+              </button>
+              <div style={{ writingMode: 'vertical-rl', textOrientation: 'mixed', padding: '20px 0', color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: 'bold', letterSpacing: '2px', cursor: 'pointer' }} onClick={() => setIsSidebarOpen(true)}>
+                MOD MENU
+              </div>
+            </div>
+          )}
+
+          {/* Sidebar expanded */}
+          {isSidebarOpen && (
+            <div className="card" style={{ width: '300px', display: 'flex', flexDirection: 'column', gap: '0', overflow: 'hidden', padding: '0', flexShrink: 0 }}>
+              <div style={{ display: 'flex', borderBottom: '1px solid var(--border-color)', backgroundColor: 'rgba(0,0,0,0.2)' }}>
+                <div style={{ flex: 1, padding: '12px', color: 'var(--accent-green)', fontWeight: 'bold', fontSize: '0.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  INSTALLED MODS ({installedMods.length})
+                </div>
+                <button
+                  style={{ width: '40px', background: 'transparent', border: 'none', borderLeft: '1px solid var(--border-color)', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                  onClick={() => setIsSidebarOpen(false)}
+                  title="Close Panel"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', overflowY: 'auto', flex: 1 }}>
+                {installedMods.length === 0 && (
+                  <div style={{ padding: '20px 15px', color: 'var(--text-muted)', fontSize: '0.8rem', textAlign: 'center' }}>
+                    No mods found in {activeInstance}.ini
+                  </div>
+                )}
+                {installedMods.map((modName, idx) => (
+                  <div
+                    key={idx}
+                    style={{ padding: '12px 15px', borderBottom: '1px solid rgba(255,255,255,0.02)', transition: 'background 0.1s', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                    onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'}
+                    onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                  >
+                    <div
+                      style={{ flex: 1, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+                      onClick={() => {
+                        if (modName.startsWith('Mod_') && /^\d+$/.test(modName.substring(4))) {
+                          navigateToMod(modName.substring(4));
+                        } else {
+                          searchWorkshop(getReadableModName(modName));
+                        }
+                      }}
+                      title={`Click to search on Steam Workshop (${modName})`}
+                    >
+                      <div style={{ fontWeight: '500', color: 'var(--text-main)', fontSize: '0.88rem', wordBreak: 'break-all' }}>{getReadableModName(modName)}</div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ fontSize: '0.65rem', color: 'var(--accent-green)', border: '1px solid rgba(164,208,7,0.3)', padding: '2px 6px', borderRadius: '4px' }}>ACTIVE</span>
+                      <button
+                        style={{ background: 'transparent', border: 'none', color: '#ff4757', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center', opacity: 0.8 }}
+                        onMouseOver={(e) => e.currentTarget.style.opacity = 1}
+                        onMouseOut={(e) => e.currentTarget.style.opacity = 0.8}
+                        title="Remove Mod"
+                        onClick={(e) => {
+                          let wId = null;
+                          if (modName.startsWith('Mod_') && /^\d+$/.test(modName.substring(4))) {
+                            wId = modName.substring(4);
+                          }
+                          removeModFromServer(wId, modName, e);
+                        }}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Browser */}
+          <div className="browser-container" style={{ flex: 1, position: 'relative' }}>
+            <div className="browser-toolbar">
+              <button className="toolbar-btn" onClick={goBack} title="Back"><ChevronLeft size={18} /></button>
+              <button className="toolbar-btn" onClick={goForward} title="Forward"><ChevronRight size={18} /></button>
+              <button className="toolbar-btn" onClick={reload} title="Reload"><RotateCw size={16} /></button>
+              <button className="toolbar-btn" onClick={goHome} title="Workshop Home"><Home size={16} /></button>
+              <div className="url-bar">{currentUrl}</div>
+            </div>
+            <div className="webview-wrapper">
+              {/* eslint-disable-next-line react/no-unknown-property */}
+              <webview ref={webviewRef} src="https://steamcommunity.com/app/108600/workshop/" allowpopups="true"></webview>
+            </div>
+            {extractedModId && (
+              <div className="mod-extractor-overlay">
+                <div style={{ display: 'flex', gap: '40px', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', marginBottom: '4px' }}>Target ID</div>
+                    <div className="mod-info-chip">{extractedModId}</div>
+                  </div>
+                  <div>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', marginBottom: '4px' }}>Server Build</div>
+                    <div style={{ color: 'var(--accent-blue)', fontWeight: 'bold', fontSize: '0.9rem' }}>{serverBuild}</div>
+                  </div>
+                  <div>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', marginBottom: '4px' }}>Mod Supports</div>
+                    <div style={{ color: modStatus.includes(serverBuild) ? 'var(--accent-green)' : (modStatus.includes('NOT SPECIFIED') || modStatus.includes('UNKNOWN') ? 'var(--accent-amber)' : 'var(--accent-red)'), fontWeight: '500', fontSize: '0.9rem' }}>
+                      {modStatus}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'stretch' }}>
+                  <select
+                    className="server-dropdown"
+                    value={activeInstance}
+                    onChange={(e) => setActiveInstance(e.target.value)}
+                    style={{ width: '180px', margin: 0, padding: '0 10px', backgroundColor: 'var(--bg-dark)' }}
+                  >
+                    {instances.map(inst => (
+                      <option key={inst} value={inst}>{inst}</option>
+                    ))}
+                  </select>
+                  {installedWorkshopIds.includes(extractedModId) ? (
+                    <button className="btn btn-danger" style={{ minWidth: '50px', fontSize: '1rem', fontWeight: 'bold' }} onClick={() => removeModFromServer(extractedModId, `Mod_${extractedModId}`)} title="Remove Mod">
+                      <Trash2 size={16} />
+                    </button>
+                  ) : (
+                    <button className={modStatus.includes('UNSUPPORTED') ? "btn btn-danger" : "btn btn-success"} onClick={addModToServer} style={{ minWidth: '50px', fontSize: '1.2rem', fontWeight: 'bold' }} disabled={modStatus === 'CHECKING COMPATIBILITY...'} title={modStatus.includes('UNSUPPORTED') ? 'Force Install' : 'Install Mod'}>
+                      +
+                    </button>
+                  )}
+                </div>
               </div>
             )}
-
-            {installedMods.map((modName, idx) => (
-              <div 
-                key={idx} 
-                style={{ 
-                  padding: '12px 15px', 
-                  borderBottom: '1px solid rgba(255,255,255,0.02)', 
-                  transition: 'background 0.1s',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center'
-                }}
-                onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'}
-                onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-              >
-                <div 
-                  style={{ flex: 1, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
-                  onClick={() => {
-                    if (modName.startsWith('Mod_') && /^\d+$/.test(modName.substring(4))) {
-                      navigateToMod(modName.substring(4));
-                    } else {
-                      searchWorkshop(getReadableModName(modName));
-                    }
-                  }}
-                  title={`Click to search on Steam Workshop (${modName})`}
-                >
-                  <div style={{ fontWeight: '500', color: 'var(--text-main)', fontSize: '0.88rem', wordBreak: 'break-all' }}>{getReadableModName(modName)}</div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <span style={{ fontSize: '0.65rem', color: 'var(--accent-green)', border: '1px solid rgba(164,208,7,0.3)', padding: '2px 6px', borderRadius: '4px' }}>ACTIVE</span>
-                  <button 
-                    style={{ background: 'transparent', border: 'none', color: '#ff4757', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center', opacity: 0.8 }}
-                    onMouseOver={(e) => e.currentTarget.style.opacity = 1}
-                    onMouseOut={(e) => e.currentTarget.style.opacity = 0.8}
-                    title="Remove Mod"
-                    onClick={(e) => {
-                      let wId = null;
-                      if (modName.startsWith('Mod_') && /^\d+$/.test(modName.substring(4))) {
-                        wId = modName.substring(4);
-                      }
-                      removeModFromServer(wId, modName, e);
-                    }}
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              </div>
-            ))}
           </div>
-        </div>
-      )}
-
-      {/* Browser Container */}
-      <div className="browser-container" style={{ flex: 1, position: 'relative' }}>
-        <div className="browser-toolbar">
-          <button className="toolbar-btn" onClick={goBack} title="Back">
-            <ChevronLeft size={18} />
-          </button>
-          <button className="toolbar-btn" onClick={goForward} title="Forward">
-            <ChevronRight size={18} />
-          </button>
-          <button className="toolbar-btn" onClick={reload} title="Reload">
-            <RotateCw size={16} />
-          </button>
-          <button className="toolbar-btn" onClick={goHome} title="Workshop Home">
-            <Home size={16} />
-          </button>
-          <div className="url-bar">{currentUrl}</div>
-        </div>
-        
-        <div className="webview-wrapper">
-          {/* eslint-disable-next-line react/no-unknown-property */}
-          <webview 
-            ref={webviewRef}
-            src="https://steamcommunity.com/app/108600/workshop/" 
-            allowpopups="true"
-          ></webview>
-        </div>
-
-        {extractedModId && (
-          <div className="mod-extractor-overlay">
-            <div style={{ display: 'flex', gap: '40px', alignItems: 'center' }}>
-              <div>
-                <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', marginBottom: '4px' }}>Target ID</div>
-                <div className="mod-info-chip">{extractedModId}</div>
-              </div>
-              <div>
-                <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', marginBottom: '4px' }}>Server Build</div>
-                <div style={{ color: 'var(--accent-blue)', fontWeight: 'bold', fontSize: '0.9rem' }}>{serverBuild}</div>
-              </div>
-              <div>
-                <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', marginBottom: '4px' }}>Mod Supports</div>
-                <div style={{ 
-                  color: modStatus.includes(serverBuild) ? 'var(--accent-green)' : (modStatus.includes('NOT SPECIFIED') || modStatus.includes('UNKNOWN') ? 'var(--accent-amber)' : 'var(--accent-red)'),
-                  fontWeight: '500',
-                  fontSize: '0.9rem'
-                }}>
-                  {modStatus}
-                </div>
-              </div>
-            </div>
-            
-            <div style={{ display: 'flex', gap: '10px', alignItems: 'stretch' }}>
-              <select 
-                className="server-dropdown" 
-                value={activeInstance}
-                onChange={(e) => setActiveInstance(e.target.value)}
-                style={{ width: '180px', margin: 0, padding: '0 10px', backgroundColor: 'var(--bg-dark)' }}
-              >
-                {instances.map(inst => (
-                  <option key={inst} value={inst}>{inst}</option>
-                ))}
-              </select>
-              {installedWorkshopIds.includes(extractedModId) ? (
-                <button 
-                  className="btn btn-danger" 
-                  style={{ minWidth: '50px', fontSize: '1rem', fontWeight: 'bold' }}
-                  onClick={() => removeModFromServer(extractedModId, `Mod_${extractedModId}`)}
-                  title="Remove Mod"
-                >
-                  <Trash2 size={16} />
-                </button>
-              ) : (
-                <button 
-                  className={modStatus.includes('UNSUPPORTED') ? "btn btn-danger" : "btn btn-success"} 
-                  onClick={addModToServer}
-                  style={{ minWidth: '50px', fontSize: '1.2rem', fontWeight: 'bold' }}
-                  disabled={modStatus === 'CHECKING COMPATIBILITY...'}
-                  title={modStatus.includes('UNSUPPORTED') ? 'Force Install' : 'Install Mod'}
-                >
-                  +
-                </button>
-              )}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -545,7 +613,7 @@ const CONFIG_SCHEMA = [
   }
 ];
 
-function ServerConfigTab({ activeInstance }) {
+function ServerConfigTab({ activeInstance, notify }) {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -674,7 +742,7 @@ function ServerConfigTab({ activeInstance }) {
       )}
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: '10px' }}>
-        <button className="btn btn-primary" onClick={() => alert('Save functionality not fully implemented in UI yet!')}>
+        <button className="btn btn-primary" onClick={() => notify('Save not yet fully implemented', 'warning')}>
           SAVE CONFIGURATION
         </button>
       </div>
@@ -682,7 +750,7 @@ function ServerConfigTab({ activeInstance }) {
   );
 }
 
-function CustomFileEditor() {
+function CustomFileEditor({ notify }) {
   const [filePath, setFilePath] = useState(null);
   const [content, setContent] = useState('');
   const [originalContent, setOriginalContent] = useState('');
@@ -706,9 +774,9 @@ function CustomFileEditor() {
       setIsSaving(false);
       if (success) {
         setOriginalContent(content);
-        alert('File saved successfully!');
+        notify('File saved successfully', 'success');
       } else {
-        alert('Failed to save file.');
+        notify('Failed to save file', 'error');
       }
     }
   };
@@ -773,6 +841,25 @@ function CustomFileEditor() {
   );
 }
 
+function Sparkline({ data = [], color = '#66c0f4', height = 40 }) {
+  if (data.length < 2) return <div style={{ height: `${height}px` }} />;
+  const max = Math.max(...data, 1);
+  const w = 200; const h = height;
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * w;
+    const y = h - (v / max) * (h - 2) - 1;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const linePts = pts.join(' ');
+  const areaPts = `0,${h} ${linePts} ${w},${h}`;
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: `${height}px`, display: 'block' }} preserveAspectRatio="none">
+      <polygon points={areaPts} fill={color} fillOpacity="0.15" />
+      <polyline points={linePts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function App() {
   // --- All state declarations (must be before any useEffect) ---
   const webviewRef = useRef(null);
@@ -793,6 +880,15 @@ function App() {
     try { return JSON.parse(localStorage.getItem('pzsm_server_builds')) || {}; }
     catch(e) { return {}; }
   });
+  const [modTab, setModTab] = useState('myMods');
+  const [serverStats, setServerStats] = useState({});
+  const [notifications, setNotifications] = useState([]);
+
+  const notify = (message, type = 'info') => {
+    const id = Date.now() + Math.random();
+    setNotifications(prev => [...prev, { id, type, message }]);
+    setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), 4000);
+  };
 
   const currentState = serverStates[activeInstance] || 'offline';
 
@@ -953,6 +1049,27 @@ function App() {
     fetchInstances();
   }, []);
 
+  useEffect(() => {
+    const id = setInterval(() => {
+      setServerStats(prev => {
+        const next = { ...prev };
+        instances.forEach(inst => {
+          const isOnline = (serverStates[inst] || 'offline') !== 'offline';
+          const cur = next[inst] || { cpu: [], ram: [], players: [] };
+          const lastCpu = cur.cpu[cur.cpu.length - 1] ?? 20;
+          const lastRam = cur.ram[cur.ram.length - 1] ?? 45;
+          next[inst] = {
+            cpu: [...cur.cpu.slice(-29), isOnline ? Math.min(100, Math.max(0, lastCpu + (Math.random() - 0.45) * 8)) : 0],
+            ram: [...cur.ram.slice(-29), isOnline ? Math.min(100, Math.max(5, lastRam + (Math.random() - 0.5) * 3)) : 0],
+            players: [...cur.players.slice(-29), isOnline && inst === activeInstance ? livePlayers.length : 0],
+          };
+        });
+        return next;
+      });
+    }, 2000);
+    return () => clearInterval(id);
+  }, [instances, serverStates, activeInstance, livePlayers]);
+
   const handleBrowseCustomFolder = async () => {
     if (window.pzAPI) {
       const newDir = await window.pzAPI.selectCustomDirectory();
@@ -969,28 +1086,27 @@ function App() {
     }
   };
 
-  const toggleServer = async () => {
-    if (!window.pzAPI || !activeInstance) return;
-    
+  const toggleServer = async (inst = activeInstance) => {
+    if (!window.pzAPI || !inst) return;
     if (!serverExePath) {
-      alert("Please select your StartServer64.bat file first!");
+      notify('Select StartServer64.bat first via Browse EXE', 'warning');
       return;
     }
-
-    if (currentState === 'offline') {
-      setServerStates(prev => ({ ...prev, [activeInstance]: 'starting' }));
-      setServerLogs(prev => ({ ...prev, [activeInstance]: '[SYSTEM] Initiating server launch...\n' }));
-      const res = await window.pzAPI.startServer(activeInstance);
+    const state = serverStates[inst] || 'offline';
+    if (state === 'offline') {
+      setServerStates(prev => ({ ...prev, [inst]: 'starting' }));
+      setServerLogs(prev => ({ ...prev, [inst]: '[SYSTEM] Initiating server launch...\n' }));
+      const res = await window.pzAPI.startServer(inst);
       if (!res.success) {
-        setServerStates(prev => ({ ...prev, [activeInstance]: 'offline' }));
-        setServerLogs(prev => ({ ...prev, [activeInstance]: (prev[activeInstance] || '') + `[ERROR] ${res.error}\n` }));
+        setServerStates(prev => ({ ...prev, [inst]: 'offline' }));
+        setServerLogs(prev => ({ ...prev, [inst]: (prev[inst] || '') + `[ERROR] ${res.error}\n` }));
       } else {
-        setServerStates(prev => ({ ...prev, [activeInstance]: 'online' }));
+        setServerStates(prev => ({ ...prev, [inst]: 'online' }));
       }
     } else {
-      const res = await window.pzAPI.stopServer(activeInstance);
+      const res = await window.pzAPI.stopServer(inst);
       if (res.success) {
-        setServerLogs(prev => ({ ...prev, [activeInstance]: (prev[activeInstance] || '') + '[SYSTEM] Sent quit command to server...\n' }));
+        setServerLogs(prev => ({ ...prev, [inst]: (prev[inst] || '') + '[SYSTEM] Sent quit command to server...\n' }));
       }
     }
   };
@@ -999,7 +1115,7 @@ function App() {
     <>
       {isMainSidebarOpen && (
         <div className="sidebar no-drag">
-          <div className="sidebar-logo">PZSM MANAGER</div>
+          <div className="sidebar-logo">PZ SERVER MANAGER</div>
         
         <div className="server-selector">
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '5px', textTransform: 'uppercase' }}>Active Instance</div>
@@ -1097,6 +1213,30 @@ function App() {
               <Menu size={24} />
             </button>
             <h1>{activeTab.toUpperCase()}</h1>
+            {activeTab === 'mods' && (
+              <div style={{ display: 'flex', alignItems: 'center', borderLeft: '1px solid var(--border-color)', paddingLeft: '15px', marginLeft: '5px', gap: '2px' }}>
+                {[['myMods', 'MY MODS'], ['workshop', 'WORKSHOP']].map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setModTab(key)}
+                    style={{
+                      padding: '5px 14px',
+                      background: modTab === key ? 'rgba(102,192,244,0.15)' : 'transparent',
+                      border: 'none',
+                      borderBottom: modTab === key ? '2px solid var(--accent-blue)' : '2px solid transparent',
+                      color: modTab === key ? 'var(--accent-blue)' : 'var(--text-muted)',
+                      cursor: 'pointer',
+                      fontSize: '0.78rem',
+                      fontWeight: 'bold',
+                      letterSpacing: '1px',
+                      fontFamily: 'inherit',
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div className="server-status">
             <span>{currentState}</span>
@@ -1105,78 +1245,136 @@ function App() {
         </div>
 
         {activeTab === 'dashboard' && (
-          <>
-            <div className="grid">
-              <div className="card">
-                <div className="card-title">PROCESS CONTROLS</div>
-                <div style={{ display: 'flex', gap: '10px', marginTop: '15px' }}>
-                  {currentState === 'offline' ? (
-                    <button className="btn btn-success" onClick={toggleServer} disabled={!activeInstance || !serverExePath}>
-                      START SERVER
-                    </button>
-                  ) : (
-                    <button className="btn btn-danger" onClick={toggleServer}>
-                      {currentState === 'starting' ? 'CANCEL' : 'STOP SERVER'}
-                    </button>
-                  )}
-                  <button className="btn btn-primary" disabled={currentState !== 'online'}>
-                    RESTART
-                  </button>
+          <div style={{ display: 'flex', gap: '20px', height: 'calc(100vh - 130px)', overflow: 'hidden' }}>
+            {/* Server List Column */}
+            <div style={{ width: '240px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '10px', overflowY: 'auto' }}>
+              {instances.length === 0 && (
+                <div className="card" style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                  No servers found. Browse for a folder.
                 </div>
-              </div>
-              <div className="card">
-                <div className="card-title">SERVER EXECUTABLE</div>
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '5px', wordBreak: 'break-all' }}>
-                  {serverExePath || "Not configured. Select StartServer64.bat"}
-                </div>
-                <button className="btn btn-secondary" style={{ marginTop: '10px', width: '100%', fontSize: '0.8rem' }} onClick={handleSelectServerExe}>
-                  BROWSE SERVER EXE
-                </button>
-              </div>
-              <div className="card">
-                <div className="card-title">PLAYERS ONLINE</div>
-                <div className="card-value">0 / 32</div>
-              </div>
+              )}
+              {instances.map(inst => {
+                const state = serverStates[inst] || 'offline';
+                const stats = serverStats[inst] || { cpu: [], ram: [] };
+                const lastCpu = stats.cpu[stats.cpu.length - 1] ?? 0;
+                const lastRam = stats.ram[stats.ram.length - 1] ?? 0;
+                const isSelected = inst === activeInstance;
+                return (
+                  <div
+                    key={inst}
+                    className="card"
+                    style={{ cursor: 'pointer', border: `1px solid ${isSelected ? 'var(--accent-blue)' : 'var(--border-color)'}`, padding: '12px', transition: 'border-color 0.15s' }}
+                    onClick={() => setActiveInstance(inst)}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <div style={{ fontWeight: 'bold', fontSize: '0.85rem', color: isSelected ? 'var(--accent-blue)' : 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '130px' }}>{inst}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
+                        <div className={`status-indicator ${state === 'online' ? 'online' : ''}`} />
+                        <span style={{ fontSize: '0.6rem', color: state === 'online' ? '#a4d007' : 'var(--text-muted)', textTransform: 'uppercase' }}>{state}</span>
+                      </div>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '10px' }}>
+                      <div>
+                        <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginBottom: '2px' }}>CPU {lastCpu.toFixed(0)}%</div>
+                        <Sparkline data={stats.cpu} color="#66c0f4" height={22} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginBottom: '2px' }}>RAM {lastRam.toFixed(0)}%</div>
+                        <Sparkline data={stats.ram} color="#a4d007" height={22} />
+                      </div>
+                    </div>
+                    <button
+                      className={state === 'offline' ? 'btn btn-success' : 'btn btn-danger'}
+                      style={{ width: '100%', fontSize: '0.75rem', padding: '5px', opacity: state === 'starting' ? 0.7 : 1 }}
+                      disabled={state === 'starting' || !serverExePath}
+                      onClick={(e) => { e.stopPropagation(); toggleServer(inst); }}
+                    >
+                      {state === 'starting' ? 'STARTING...' : state === 'offline' ? 'START' : 'STOP'}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
 
-            <div style={{ marginTop: '25px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ color: 'var(--accent-blue)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '1px' }}>SYSTEM CONSOLE ({activeInstance})</div>
-            </div>
-            <div className="console-view" ref={consoleRef}>
-              {!serverLogs[activeInstance] && (
+            {/* Detail Panel */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '15px', overflow: 'hidden', minWidth: 0 }}>
+              {activeInstance ? (
                 <>
-                  <p style={{color: '#66c0f4'}}>[SYSTEM] Initializing Project Zomboid Server Manager...</p>
-                  <p style={{color: '#8f98a0'}}>[SYSTEM] Scanning Directory: {searchDir}</p>
-                  {activeInstance ? (
-                    <>
-                      <p style={{color: '#8f98a0'}}>[SYSTEM] Instance selected: {activeInstance}</p>
-                      <p style={{color: '#8f98a0'}}>[SYSTEM] Loading configuration from {activeInstance}.ini</p>
-                      {!serverExePath && <p style={{color: '#ffb347'}}>[WARNING] Server executable not set. Please browse for StartServer64.bat to launch.</p>}
-                    </>
-                  ) : (
-                    <p style={{color: '#8f2a2a'}}>[WARNING] No instances found! Please install a Zomboid server first or browse for a custom folder.</p>
-                  )}
+                  {/* Stat graphs */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '15px', flexShrink: 0 }}>
+                    {[
+                      { label: 'CPU USAGE', key: 'cpu', color: '#66c0f4', unit: '%' },
+                      { label: 'RAM USAGE', key: 'ram', color: '#a4d007', unit: '%' },
+                      { label: 'PLAYERS', key: 'players', color: '#ffb347', unit: '' },
+                    ].map(({ label, key, color, unit }) => {
+                      const data = (serverStats[activeInstance] || {})[key] || [];
+                      const last = data[data.length - 1] ?? 0;
+                      return (
+                        <div key={label} className="card" style={{ padding: '12px' }}>
+                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', letterSpacing: '1px', marginBottom: '4px' }}>{label}</div>
+                          <div style={{ fontSize: '1.6rem', fontWeight: '400', color, marginBottom: '8px', lineHeight: 1 }}>
+                            {key === 'players' ? Math.round(last) : last.toFixed(1)}{unit}
+                          </div>
+                          <Sparkline data={data} color={color} height={52} />
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Server exe */}
+                  <div className="card" style={{ display: 'flex', gap: '15px', alignItems: 'center', padding: '12px', flexShrink: 0 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '3px', letterSpacing: '1px' }}>SERVER EXECUTABLE</div>
+                      <div style={{ fontSize: '0.8rem', color: serverExePath ? 'var(--accent-blue)' : 'var(--text-muted)', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {serverExePath || 'Not configured — select StartServer64.bat'}
+                      </div>
+                    </div>
+                    <button className="btn btn-primary" style={{ fontSize: '0.8rem', whiteSpace: 'nowrap', flexShrink: 0 }} onClick={handleSelectServerExe}>
+                      BROWSE EXE
+                    </button>
+                  </div>
+
+                  {/* Console */}
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--accent-blue)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '1px', flexShrink: 0 }}>
+                      CONSOLE — {activeInstance}
+                    </div>
+                    <div className="console-view" ref={consoleRef} style={{ flex: 1, height: 'auto' }}>
+                      {!serverLogs[activeInstance] && (
+                        <>
+                          <p style={{color: '#66c0f4'}}>[SYSTEM] Initializing Project Zomboid Server Manager...</p>
+                          <p style={{color: '#8f98a0'}}>[SYSTEM] Scanning directory: {searchDir}</p>
+                          <p style={{color: '#8f98a0'}}>[SYSTEM] Instance: {activeInstance}</p>
+                          {!serverExePath && <p style={{color: '#ffb347'}}>[WARNING] Server executable not set. Browse for StartServer64.bat.</p>}
+                        </>
+                      )}
+                      {serverLogs[activeInstance] && (
+                        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordWrap: 'break-word', color: '#fff', fontSize: '0.85rem', fontFamily: 'monospace' }}>
+                          {serverLogs[activeInstance]}
+                        </pre>
+                      )}
+                    </div>
+                  </div>
                 </>
-              )}
-              {serverLogs[activeInstance] && (
-                <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordWrap: 'break-word', color: '#fff', fontSize: '0.85rem', fontFamily: 'monospace' }}>
-                  {serverLogs[activeInstance]}
-                </pre>
+              ) : (
+                <div className="card" style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '60px', fontSize: '0.9rem' }}>
+                  Select a server from the list to view stats
+                </div>
               )}
             </div>
-          </>
+          </div>
         )}
 
         {activeTab === 'mods' && (
-          <WorkshopBrowser activeInstance={activeInstance} setActiveInstance={setActiveInstance} instances={instances} serverBuild={serverBuilds[activeInstance] || 'B41'} />
+          <WorkshopBrowser activeInstance={activeInstance} setActiveInstance={setActiveInstance} instances={instances} serverBuild={serverBuilds[activeInstance] || 'B41'} modTab={modTab} setModTab={setModTab} notify={notify} />
         )}
 
         {activeTab === 'config' && (
-          <ServerConfigTab activeInstance={activeInstance} />
+          <ServerConfigTab activeInstance={activeInstance} notify={notify} />
         )}
 
         {activeTab === 'custom' && (
-          <CustomFileEditor />
+          <CustomFileEditor notify={notify} />
         )}
 
         {activeTab === 'map' && (
@@ -1264,6 +1462,41 @@ function App() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* In-app notifications */}
+      <div style={{ position: 'fixed', bottom: '20px', right: '20px', display: 'flex', flexDirection: 'column', gap: '8px', zIndex: 9999, pointerEvents: 'none' }}>
+        {notifications.map(n => {
+          const styles = {
+            success: { border: '#a4d007', icon: '✓', iconColor: '#a4d007' },
+            error:   { border: '#ff4757', icon: '✕', iconColor: '#ff4757' },
+            warning: { border: '#ffb347', icon: '⚠', iconColor: '#ffb347' },
+            info:    { border: '#66c0f4', icon: 'ℹ', iconColor: '#66c0f4' },
+          };
+          const s = styles[n.type] || styles.info;
+          return (
+            <div
+              key={n.id}
+              style={{
+                padding: '10px 14px',
+                background: 'rgba(13,17,23,0.97)',
+                border: `1px solid ${s.border}`,
+                borderLeft: `3px solid ${s.border}`,
+                color: 'var(--text-main)',
+                fontSize: '0.84rem',
+                maxWidth: '320px',
+                boxShadow: '0 4px 20px rgba(0,0,0,0.7)',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '10px',
+                pointerEvents: 'auto',
+              }}
+            >
+              <span style={{ color: s.iconColor, fontWeight: 'bold', flexShrink: 0 }}>{s.icon}</span>
+              <span>{n.message}</span>
+            </div>
+          );
+        })}
       </div>
     </>
   );
