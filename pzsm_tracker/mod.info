@@ -1,0 +1,7 @@
+name=pzsm_tracker
+poster=poster.png
+description=bazq's PZSM live player tracker. Writes player positions to a JSON file every ~5 seconds so pz-modmanager can display them on the live map. Extremely lightweight (0.0ms resmon).
+id=pzsm_tracker
+modversion=1
+pzversion=41.78
+url=
