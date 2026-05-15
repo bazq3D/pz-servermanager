@@ -10,6 +10,7 @@ const __dirname = path.dirname(__filename);
 
 let customDir = null;
 let serverExePath = null;
+let steamcmdPath = null;
 const runningServers = {};
 
 const getConfigPath = () => path.join(app.getPath('userData'), 'pzsm-config.json');
@@ -21,6 +22,7 @@ const loadAppConfig = () => {
       const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       if (data.customDir) customDir = data.customDir;
       if (data.serverExePath) serverExePath = data.serverExePath;
+      if (data.steamcmdPath) steamcmdPath = data.steamcmdPath;
     }
   } catch (err) {
     console.error("Error loading app config:", err);
@@ -29,7 +31,7 @@ const loadAppConfig = () => {
 
 const saveAppConfig = () => {
   try {
-    fs.writeFileSync(getConfigPath(), JSON.stringify({ customDir, serverExePath }), 'utf8');
+    fs.writeFileSync(getConfigPath(), JSON.stringify({ customDir, serverExePath, steamcmdPath }), 'utf8');
   } catch (err) {
     console.error("Error saving app config:", err);
   }
@@ -314,4 +316,164 @@ ipcMain.handle('stop-players-watcher', async () => {
   }
   watchedPlayersPath = null;
   return true;
+});
+
+// --- Setup Wizard IPC ---
+
+ipcMain.handle('check-steamcmd', async () => {
+  if (steamcmdPath && fs.existsSync(steamcmdPath)) return { found: true, path: steamcmdPath };
+  const candidates = [
+    'C:\\steamcmd\\steamcmd.exe',
+    'C:\\SteamCMD\\steamcmd.exe',
+    path.join(process.env.USERPROFILE || '', 'steamcmd', 'steamcmd.exe'),
+    path.join(process.env.USERPROFILE || '', 'SteamCMD', 'steamcmd.exe'),
+    path.join(process.env.ProgramFiles || '', 'steamcmd', 'steamcmd.exe'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      steamcmdPath = p;
+      saveAppConfig();
+      return { found: true, path: p };
+    }
+  }
+  return { found: false };
+});
+
+ipcMain.handle('select-steamcmd', async () => {
+  const window = BrowserWindow.getFocusedWindow();
+  const { canceled, filePaths } = await dialog.showOpenDialog(window, {
+    properties: ['openFile'],
+    title: 'Select steamcmd.exe',
+    filters: [{ name: 'SteamCMD', extensions: ['exe'] }],
+  });
+  if (!canceled && filePaths.length > 0) {
+    steamcmdPath = filePaths[0];
+    saveAppConfig();
+    return steamcmdPath;
+  }
+  return null;
+});
+
+ipcMain.handle('get-steamcmd-path', () => steamcmdPath);
+
+ipcMain.handle('select-install-dir', async () => {
+  const window = BrowserWindow.getFocusedWindow();
+  const { canceled, filePaths } = await dialog.showOpenDialog(window, {
+    properties: ['openDirectory', 'createDirectory'],
+    title: 'Select PZ Dedicated Server Installation Folder',
+    buttonLabel: 'Install Here',
+  });
+  if (!canceled && filePaths.length > 0) return filePaths[0];
+  return null;
+});
+
+ipcMain.handle('install-pz-server', async (event, { steamcmdExe, installDir }) => {
+  return new Promise((resolve) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    const sendLog = (line) => { if (win) win.webContents.send('install-log', line); };
+
+    if (!fs.existsSync(steamcmdExe)) {
+      sendLog('[ERROR] steamcmd.exe not found at: ' + steamcmdExe + '\n');
+      return resolve({ success: false, error: 'steamcmd.exe not found' });
+    }
+    if (!fs.existsSync(installDir)) {
+      try { fs.mkdirSync(installDir, { recursive: true }); }
+      catch (e) { return resolve({ success: false, error: e.message }); }
+    }
+
+    sendLog(`[SYSTEM] Starting SteamCMD...\n`);
+    sendLog(`[SYSTEM] Install dir: ${installDir}\n`);
+    sendLog(`[SYSTEM] App ID: 380870 (Project Zomboid Dedicated Server)\n\n`);
+
+    const args = [
+      '+force_install_dir', installDir,
+      '+login', 'anonymous',
+      '+app_update', '380870', 'validate',
+      '+quit',
+    ];
+    const child = spawn(steamcmdExe, args);
+
+    child.stdout.on('data', (d) => sendLog(d.toString()));
+    child.stderr.on('data', (d) => sendLog(d.toString()));
+
+    child.on('error', (err) => {
+      sendLog(`\n[ERROR] ${err.message}\n`);
+      resolve({ success: false, error: err.message });
+    });
+
+    child.on('close', (code) => {
+      const exeCandidates = ['StartServer64.bat', 'StartServer32.bat', 'start-server.sh'];
+      let foundExe = null;
+      for (const name of exeCandidates) {
+        const p = path.join(installDir, name);
+        if (fs.existsSync(p)) { foundExe = p; break; }
+      }
+      if (foundExe) {
+        serverExePath = foundExe;
+        saveAppConfig();
+        sendLog(`\n[SYSTEM] Server executable set: ${foundExe}\n`);
+      }
+      sendLog(`\n[SYSTEM] SteamCMD exited with code ${code}\n`);
+      resolve({ success: code === 0 || !!foundExe, exePath: foundExe });
+    });
+  });
+});
+
+ipcMain.handle('create-server-instance', async (event, { instanceName, config }) => {
+  const dir = getZomboidServerDir();
+  if (!fs.existsSync(dir)) {
+    try { fs.mkdirSync(dir, { recursive: true }); }
+    catch (e) { return { success: false, error: e.message }; }
+  }
+  const iniPath = path.join(dir, `${instanceName}.ini`);
+  if (fs.existsSync(iniPath)) return { success: false, error: 'Instance already exists' };
+
+  const port = parseInt(config.port) || 16261;
+  const lines = [
+    `PublicName=${config.serverName || instanceName}`,
+    `PublicDescription=A Project Zomboid Server`,
+    `MaxPlayers=${config.maxPlayers || 32}`,
+    `Password=${config.password || ''}`,
+    `DefaultPort=${port}`,
+    `UDPPort=${port + 1}`,
+    `ResetID=${Math.floor(Math.random() * 1000000000)}`,
+    `Map=Muldraugh, KY`,
+    `Mods=`,
+    `WorkshopItems=`,
+    `PauseEmpty=true`,
+    `GlobalChat=true`,
+    `Open=${config.password ? 'false' : 'true'}`,
+    `ServerWelcomeMessage=Welcome to our server!`,
+    `DisplayUserName=true`,
+    `LogLocalChat=false`,
+    `AutoCreateUserInWhiteList=false`,
+    `RealTimePerIngameMinute=1.0`,
+    `StartTime=0`,
+    `AntiCheatProtectionType1=true`,
+    `AntiCheatProtectionType2=true`,
+    `AntiCheatProtectionType3=true`,
+    `AntiCheatProtectionType4=true`,
+    `AntiCheatProtectionType5=true`,
+    `AntiCheatProtectionType6=true`,
+    `AntiCheatProtectionType7=true`,
+    `AntiCheatProtectionType8=true`,
+    `AntiCheatProtectionType9=true`,
+    `AntiCheatProtectionType10=true`,
+    `AntiCheatProtectionType11=true`,
+    `AntiCheatProtectionType12=true`,
+    `AntiCheatProtectionType13=true`,
+    `AntiCheatProtectionType14=true`,
+    `AntiCheatProtectionType15=true`,
+    `AntiCheatProtectionType16=true`,
+    `AntiCheatProtectionType17=true`,
+    `AntiCheatProtectionType18=true`,
+    `AntiCheatProtectionType19=true`,
+    `AntiCheatProtectionType20=true`,
+  ];
+  try {
+    fs.writeFileSync(iniPath, lines.join('\n'), 'utf8');
+    return { success: true, path: iniPath };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
 });

@@ -5,8 +5,8 @@ import './index.css';
 // Default demo players shown when no tracker file is connected
 const DEMO_PLAYERS = [];
 
-function ModCard({ modName, getReadableModName, setModTab, navigateToMod, searchWorkshop, removeModFromServer, cachedImg, onImageLoaded }) {
-  const workshopId = modName.startsWith('Mod_') && /^\d+$/.test(modName.substring(4)) ? modName.substring(4) : null;
+function ModCard({ modName, workshopId: wIdProp, getReadableModName, setModTab, navigateToMod, searchWorkshop, removeModFromServer, cachedImg, onImageLoaded }) {
+  const workshopId = wIdProp || (modName.startsWith('Mod_') && /^\d+$/.test(modName.substring(4)) ? modName.substring(4) : null);
   const [imgUrl, setImgUrl] = useState(cachedImg || null);
 
   useEffect(() => {
@@ -106,6 +106,27 @@ function WorkshopBrowser({ activeInstance, setActiveInstance, instances = [], se
     });
   };
 
+  const [quickInstallOpen, setQuickInstallOpen] = useState(false);
+  const [quickInstallText, setQuickInstallText] = useState('');
+
+  const batchInstallMods = async (ids) => {
+    if (!window.pzAPI) { notify('[Browser mode] Quick Install not available', 'warning'); return; }
+    let added = 0, failed = 0;
+    for (const wId of ids) {
+      try {
+        const result = await window.pzAPI.addModToServer(activeInstance, wId, `Mod_${wId}`);
+        if (result.success) {
+          added++;
+          if (result.config) {
+            if (result.config.Mods) setInstalledMods(result.config.Mods.split(';').map(m => m.trim()).filter(Boolean));
+            if (result.config.WorkshopItems) setInstalledWorkshopIds(result.config.WorkshopItems.split(';').map(m => m.trim()).filter(Boolean));
+          }
+        } else { failed++; }
+      } catch { failed++; }
+    }
+    notify(`Installed ${added} mod${added !== 1 ? 's' : ''}${failed ? `, ${failed} failed` : ''}`, added > 0 ? 'success' : 'error');
+  };
+
   const fetchModNameFromSteam = async (workshopId) => {
     if (webviewRef.current) {
       try {
@@ -126,21 +147,6 @@ function WorkshopBrowser({ activeInstance, setActiveInstance, instances = [], se
   const getReadableModName = (modStr) => {
     if (modNameCache[modStr]) {
       return modNameCache[modStr];
-    }
-
-    let lookUpId = modStr;
-    if (modStr.startsWith('Mod_')) {
-      lookUpId = modStr.substring(4);
-    }
-    
-    for (const build of Object.values(RECOMMENDED_MODS)) {
-      for (const categoryGroup of build) {
-        for (const mod of categoryGroup.mods) {
-          if (mod.id === lookUpId || mod.name === modStr) {
-            return mod.name;
-          }
-        }
-      }
     }
 
     if (modStr.startsWith('Mod_')) {
@@ -317,32 +323,94 @@ function WorkshopBrowser({ activeInstance, setActiveInstance, instances = [], se
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 110px)' }}>
       {/* My Mods Grid - always mounted */}
-      <div style={{ flex: 1, overflowY: 'auto', display: modTab === 'myMods' ? 'block' : 'none' }}>
-          {installedMods.length === 0 ? (
-            <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '60px', fontSize: '0.9rem' }}>
-              No mods installed in {activeInstance || 'server'}.ini
-            </div>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '12px' }}>
-              {installedMods.map((modName, idx) => {
-                const wId = modName.startsWith('Mod_') && /^\d+$/.test(modName.substring(4)) ? modName.substring(4) : null;
-                return (
-                  <ModCard
-                    key={idx}
-                    modName={modName}
-                    getReadableModName={getReadableModName}
-                    setModTab={setModTab}
-                    navigateToMod={navigateToMod}
-                    searchWorkshop={searchWorkshop}
-                    removeModFromServer={removeModFromServer}
-                    cachedImg={wId ? modImageCache[wId] : null}
-                    onImageLoaded={saveImageToCache}
-                  />
-                );
-              })}
-            </div>
-          )}
+      <div style={{ flex: 1, overflowY: 'auto', display: modTab === 'myMods' ? 'flex' : 'none', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexShrink: 0 }}>
+          <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+            {installedMods.length} mod{installedMods.length !== 1 ? 's' : ''} installed
+          </div>
+          <button
+            className="btn btn-primary"
+            style={{ fontSize: '0.75rem', padding: '5px 12px' }}
+            onClick={() => setQuickInstallOpen(true)}
+          >
+            ⚡ QUICK INSTALL
+          </button>
+        </div>
+        {installedMods.length === 0 ? (
+          <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '60px', fontSize: '0.9rem' }}>
+            No mods installed in {activeInstance || 'server'}.ini
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '12px', alignContent: 'start' }}>
+            {installedMods.map((modName, idx) => {
+              const wId = installedWorkshopIds[idx] || (modName.startsWith('Mod_') && /^\d+$/.test(modName.substring(4)) ? modName.substring(4) : null);
+              return (
+                <ModCard
+                  key={idx}
+                  modName={modName}
+                  workshopId={wId}
+                  getReadableModName={getReadableModName}
+                  setModTab={setModTab}
+                  navigateToMod={navigateToMod}
+                  searchWorkshop={searchWorkshop}
+                  removeModFromServer={removeModFromServer}
+                  cachedImg={wId ? modImageCache[wId] : null}
+                  onImageLoaded={saveImageToCache}
+                />
+              );
+            })}
+          </div>
+        )}
       </div>
+
+      {/* Quick Install Overlay */}
+      {quickInstallOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '24px', width: '440px', maxWidth: '90vw' }}>
+            <h3 style={{ margin: '0 0 6px', color: 'var(--text-main)', fontSize: '1rem', letterSpacing: '1px' }}>⚡ QUICK INSTALL</h3>
+            <p style={{ margin: '0 0 12px', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+              You can paste your Workshop ID's here easily.
+            </p>
+            <textarea
+              value={quickInstallText}
+              onChange={e => setQuickInstallText(e.target.value)}
+              placeholder={'2392459520\n2458497649\n...'}
+              style={{ width: '100%', height: '150px', background: 'var(--bg-dark)', border: '1px solid var(--border-color)', borderRadius: '4px', color: 'var(--text-main)', padding: '10px', fontFamily: 'monospace', fontSize: '0.85rem', resize: 'vertical', boxSizing: 'border-box' }}
+              autoFocus
+            />
+            {(() => {
+              const validIds = quickInstallText.split(/[\n,]+/).map(s => s.trim()).filter(s => /^\d+$/.test(s));
+              return (
+                <div style={{ display: 'flex', gap: '8px', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
+                  <span style={{ fontSize: '0.75rem', color: validIds.length > 0 ? 'var(--accent-green)' : 'var(--text-muted)' }}>
+                    {validIds.length > 0 ? `${validIds.length} valid ID${validIds.length !== 1 ? 's' : ''} detected` : 'No IDs detected'}
+                  </span>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      className="btn"
+                      style={{ background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border-color)' }}
+                      onClick={() => { setQuickInstallOpen(false); setQuickInstallText(''); }}
+                    >
+                      CANCEL
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      disabled={validIds.length === 0}
+                      onClick={() => {
+                        setQuickInstallOpen(false);
+                        setQuickInstallText('');
+                        batchInstallMods(validIds);
+                      }}
+                    >
+                      INSTALL ({validIds.length})
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
 
       {/* Workshop Browser - always mounted so webview event listeners work from the start */}
       <div style={{ display: modTab === 'workshop' ? 'flex' : 'none', gap: '20px', flex: 1, overflow: 'hidden' }}>
@@ -841,6 +909,247 @@ function CustomFileEditor({ notify }) {
   );
 }
 
+function SetupWizard({ onFinish, notify }) {
+  const [step, setStep] = useState(0);
+  const [steamcmd, setSteamcmd] = useState({ found: false, path: '' });
+  const [checking, setChecking] = useState(false);
+  const [installDir, setInstallDir] = useState('C:\\PZServer');
+  const [installing, setInstalling] = useState(false);
+  const [installDone, setInstallDone] = useState(false);
+  const [installLog, setInstallLog] = useState('');
+  const [cfg, setCfg] = useState({ instanceName: 'MyServer', serverName: 'My PZ Server', maxPlayers: 32, port: 16261, password: '' });
+  const [creating, setCreating] = useState(false);
+  const logRef = useRef(null);
+
+  useEffect(() => {
+    if (!window.pzAPI) return;
+    setChecking(true);
+    window.pzAPI.checkSteamCmd().then(r => { setSteamcmd(r); setChecking(false); });
+  }, []);
+
+  useEffect(() => {
+    if (!window.pzAPI) return;
+    const cleanup = window.pzAPI.onInstallLog(line => {
+      setInstallLog(prev => prev + line);
+      setTimeout(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, 10);
+    });
+    return cleanup;
+  }, []);
+
+  const browseForSteamCmd = async () => {
+    if (!window.pzAPI) return;
+    const p = await window.pzAPI.selectSteamCmd();
+    if (p) setSteamcmd({ found: true, path: p });
+  };
+
+  const browseInstallDir = async () => {
+    if (!window.pzAPI) return;
+    const d = await window.pzAPI.selectInstallDir();
+    if (d) setInstallDir(d);
+  };
+
+  const startInstall = async () => {
+    setInstalling(true);
+    setInstallLog('');
+    const result = await window.pzAPI.installPZServer(steamcmd.path, installDir);
+    setInstalling(false);
+    setInstallDone(true);
+    if (result.success) notify('PZ Dedicated Server downloaded!', 'success');
+    else notify('Install may have issues — check the log.', 'warning');
+  };
+
+  const createInstance = async () => {
+    if (!cfg.instanceName.trim()) { notify('Instance name is required', 'error'); return; }
+    setCreating(true);
+    const result = await window.pzAPI.createServerInstance(cfg.instanceName.trim(), cfg);
+    setCreating(false);
+    if (result.success) {
+      notify(`Server "${cfg.instanceName}" created!`, 'success');
+      setStep(4);
+    } else {
+      notify(result.error || 'Failed to create server', 'error');
+    }
+  };
+
+  const inputStyle = { width: '100%', background: 'var(--bg-dark)', border: '1px solid var(--border-color)', borderRadius: '4px', color: 'var(--text-main)', padding: '8px 10px', fontFamily: 'inherit', fontSize: '0.88rem', boxSizing: 'border-box' };
+  const labelStyle = { display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '4px' };
+
+  const STEPS = ['Welcome', 'SteamCMD', 'Install', 'Configure', 'Done'];
+
+  return (
+    <div style={{ maxWidth: '640px', margin: '0 auto', padding: '20px 0' }}>
+      {/* Step indicator */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0', marginBottom: '32px' }}>
+        {STEPS.map((label, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', flex: i < STEPS.length - 1 ? 1 : 'none' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+              <div style={{ width: '28px', height: '28px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 'bold', background: i < step ? 'var(--accent-green)' : i === step ? 'var(--accent-blue)' : 'var(--bg-card)', color: i <= step ? '#0d1117' : 'var(--text-muted)', border: i === step ? '2px solid var(--accent-blue)' : '2px solid transparent' }}>
+                {i < step ? '✓' : i + 1}
+              </div>
+              <span style={{ fontSize: '0.6rem', color: i === step ? 'var(--accent-blue)' : 'var(--text-muted)', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>{label}</span>
+            </div>
+            {i < STEPS.length - 1 && <div style={{ flex: 1, height: '2px', background: i < step ? 'var(--accent-green)' : 'var(--border-color)', margin: '0 6px', marginBottom: '18px' }} />}
+          </div>
+        ))}
+      </div>
+
+      {/* Step 0: Welcome */}
+      {step === 0 && (
+        <div className="card" style={{ padding: '28px' }}>
+          <h2 style={{ margin: '0 0 8px', color: 'var(--text-main)', fontSize: '1.2rem' }}>Server Setup Wizard</h2>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', lineHeight: 1.6, margin: '0 0 20px' }}>
+            This wizard will guide you through setting up a <strong style={{ color: 'var(--text-main)' }}>Project Zomboid Dedicated Server</strong> from scratch.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '24px' }}>
+            {[
+              ['1', 'Locate SteamCMD', 'Valve\'s free server download tool'],
+              ['2', 'Download server files', 'Automatic install via SteamCMD (App ID 380870)'],
+              ['3', 'Configure your instance', 'Name, port, password and player count'],
+            ].map(([n, title, desc]) => (
+              <div key={n} style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+                <div style={{ width: '22px', height: '22px', borderRadius: '50%', background: 'rgba(102,192,244,0.15)', border: '1px solid var(--accent-blue)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', color: 'var(--accent-blue)', fontWeight: 'bold', flexShrink: 0, marginTop: '1px' }}>{n}</div>
+                <div>
+                  <div style={{ color: 'var(--text-main)', fontSize: '0.88rem', fontWeight: '500' }}>{title}</div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>{desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <button className="btn btn-primary" style={{ width: '100%' }} onClick={() => setStep(1)}>Get Started →</button>
+        </div>
+      )}
+
+      {/* Step 1: SteamCMD */}
+      {step === 1 && (
+        <div className="card" style={{ padding: '28px' }}>
+          <h2 style={{ margin: '0 0 6px', color: 'var(--text-main)', fontSize: '1.1rem' }}>SteamCMD</h2>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', margin: '0 0 20px' }}>
+            SteamCMD is Valve's free tool for downloading dedicated server files. If you don't have it, download and extract it first.
+          </p>
+          {checking ? (
+            <div style={{ color: 'var(--text-muted)', padding: '20px 0', textAlign: 'center' }}>Searching...</div>
+          ) : steamcmd.found ? (
+            <div style={{ background: 'rgba(164,208,7,0.08)', border: '1px solid rgba(164,208,7,0.3)', borderRadius: '6px', padding: '12px 16px', marginBottom: '16px' }}>
+              <div style={{ color: 'var(--accent-green)', fontWeight: 'bold', fontSize: '0.85rem', marginBottom: '4px' }}>✓ SteamCMD found</div>
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.78rem', fontFamily: 'monospace', wordBreak: 'break-all' }}>{steamcmd.path}</div>
+            </div>
+          ) : (
+            <div style={{ background: 'rgba(255,71,87,0.08)', border: '1px solid rgba(255,71,87,0.3)', borderRadius: '6px', padding: '12px 16px', marginBottom: '16px' }}>
+              <div style={{ color: 'var(--accent-red)', fontWeight: 'bold', fontSize: '0.85rem', marginBottom: '4px' }}>✕ SteamCMD not found</div>
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>Download steamcmd.exe and browse to its location below.</div>
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '20px' }}>
+            <button className="btn" style={{ background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-muted)', flex: 1 }} onClick={browseForSteamCmd}>
+              {steamcmd.found ? 'Change Path...' : 'Browse for steamcmd.exe...'}
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button className="btn" style={{ background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }} onClick={() => setStep(0)}>← Back</button>
+            <button className="btn btn-primary" style={{ flex: 1 }} disabled={!steamcmd.found} onClick={() => setStep(2)}>Next →</button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 2: Install */}
+      {step === 2 && (
+        <div className="card" style={{ padding: '28px' }}>
+          <h2 style={{ margin: '0 0 6px', color: 'var(--text-main)', fontSize: '1.1rem' }}>Download Server Files</h2>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', margin: '0 0 20px' }}>
+            PZ Dedicated Server requires approximately <strong style={{ color: 'var(--text-main)' }}>6 GB</strong> of disk space.
+          </p>
+          <div style={{ marginBottom: '16px' }}>
+            <label style={labelStyle}>Installation Folder</label>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <input value={installDir} onChange={e => setInstallDir(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+              <button className="btn" style={{ background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} onClick={browseInstallDir}>Browse</button>
+            </div>
+          </div>
+          {installLog && (
+            <div ref={logRef} style={{ background: '#090c10', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '10px', height: '180px', overflowY: 'auto', fontFamily: 'monospace', fontSize: '0.72rem', color: '#c6d4df', whiteSpace: 'pre-wrap', wordBreak: 'break-all', marginBottom: '16px' }}>
+              {installLog}
+            </div>
+          )}
+          {installDone && (
+            <div style={{ background: 'rgba(164,208,7,0.08)', border: '1px solid rgba(164,208,7,0.3)', borderRadius: '6px', padding: '10px 14px', marginBottom: '16px' }}>
+              <span style={{ color: 'var(--accent-green)', fontWeight: 'bold', fontSize: '0.85rem' }}>✓ Installation complete</span>
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button className="btn" style={{ background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }} onClick={() => setStep(1)} disabled={installing}>← Back</button>
+            {!installDone ? (
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={startInstall} disabled={installing || !installDir}>
+                {installing ? 'Downloading...' : '⬇ Download Server'}
+              </button>
+            ) : (
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => setStep(3)}>Next →</button>
+            )}
+          </div>
+          {!installDone && (
+            <button style={{ marginTop: '8px', background: 'transparent', border: 'none', color: 'var(--text-muted)', fontSize: '0.75rem', cursor: 'pointer', textDecoration: 'underline', padding: 0 }} onClick={() => setStep(3)}>
+              Server already installed → skip this step
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Step 3: Configure */}
+      {step === 3 && (
+        <div className="card" style={{ padding: '28px' }}>
+          <h2 style={{ margin: '0 0 6px', color: 'var(--text-main)', fontSize: '1.1rem' }}>Server Configuration</h2>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', margin: '0 0 20px' }}>Enter the basic settings for your new server instance.</p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '20px' }}>
+            <div style={{ gridColumn: '1/-1' }}>
+              <label style={labelStyle}>Instance Adı <span style={{ color: 'var(--accent-red)' }}>*</span></label>
+              <input value={cfg.instanceName} onChange={e => setCfg(p => ({ ...p, instanceName: e.target.value.replace(/[^a-zA-Z0-9_-]/g, '') }))} style={inputStyle} placeholder="MyServer" />
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '3px' }}>Letters, numbers, _ and - only (used as the config filename)</div>
+            </div>
+            <div style={{ gridColumn: '1/-1' }}>
+              <label style={labelStyle}>Server Display Name</label>
+              <input value={cfg.serverName} onChange={e => setCfg(p => ({ ...p, serverName: e.target.value }))} style={inputStyle} placeholder="My PZ Server" />
+            </div>
+            <div>
+              <label style={labelStyle}>Max Players</label>
+              <input type="number" min="1" max="100" value={cfg.maxPlayers} onChange={e => setCfg(p => ({ ...p, maxPlayers: parseInt(e.target.value) || 32 }))} style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Port</label>
+              <input type="number" value={cfg.port} onChange={e => setCfg(p => ({ ...p, port: e.target.value }))} style={inputStyle} placeholder="16261" />
+            </div>
+            <div style={{ gridColumn: '1/-1' }}>
+              <label style={labelStyle}>Password (leave empty = public)</label>
+              <input type="password" value={cfg.password} onChange={e => setCfg(p => ({ ...p, password: e.target.value }))} style={inputStyle} placeholder="Leave blank for no password" />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button className="btn" style={{ background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }} onClick={() => setStep(2)}>← Back</button>
+            <button className="btn btn-primary" style={{ flex: 1 }} onClick={createInstance} disabled={creating || !cfg.instanceName.trim()}>
+              {creating ? 'Creating...' : 'Create Server →'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 4: Done */}
+      {step === 4 && (
+        <div className="card" style={{ padding: '28px', textAlign: 'center' }}>
+          <div style={{ fontSize: '3rem', marginBottom: '12px' }}>🎉</div>
+          <h2 style={{ margin: '0 0 8px', color: 'var(--accent-green)', fontSize: '1.2rem' }}>Server Ready!</h2>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', margin: '0 0 8px' }}>
+            Instance <strong style={{ color: 'var(--text-main)' }}>{cfg.instanceName}</strong> has been created.
+          </p>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', margin: '0 0 24px' }}>
+            You can start the server from the Dashboard, fine-tune settings in Configuration, and add mods in Mod Manager.
+          </p>
+          <button className="btn btn-primary" style={{ width: '100%' }} onClick={onFinish}>
+            Go to Dashboard →
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Sparkline({ data = [], color = '#66c0f4', height = 40 }) {
   if (data.length < 2) return <div style={{ height: `${height}px` }} />;
   const max = Math.max(...data, 1);
@@ -1192,11 +1501,19 @@ function App() {
           >
             LIVE MAP
           </div>
-          <div 
+          <div
             className={`nav-item ${activeTab === 'custom' ? 'active' : ''}`}
             onClick={() => setActiveTab('custom')}
           >
             CUSTOM FILES
+          </div>
+          <div style={{ flex: 1 }} />
+          <div
+            className={`nav-item ${activeTab === 'setup' ? 'active' : ''}`}
+            onClick={() => setActiveTab('setup')}
+            style={{ borderTop: '1px solid var(--border-color)', color: activeTab === 'setup' ? 'var(--accent-green)' : 'var(--text-muted)' }}
+          >
+            + NEW SERVER
           </div>
         </div>
         </div>
@@ -1238,9 +1555,41 @@ function App() {
               </div>
             )}
           </div>
-          <div className="server-status">
-            <span>{currentState}</span>
-            <div className={`status-indicator ${currentState === 'online' ? 'online' : ''}`}></div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div style={{ display: 'flex', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+              {['B41', 'B42'].map(b => {
+                const active = (serverBuilds[activeInstance] || 'B41') === b;
+                return (
+                  <button
+                    key={b}
+                    onClick={() => {
+                      const nb = { ...serverBuilds, [activeInstance]: b };
+                      setServerBuilds(nb);
+                      localStorage.setItem('pzsm_server_builds', JSON.stringify(nb));
+                    }}
+                    style={{
+                      padding: '3px 11px',
+                      background: active ? 'var(--accent-blue)' : 'transparent',
+                      color: active ? '#0d1117' : 'var(--text-muted)',
+                      border: 'none',
+                      borderRight: b === 'B41' ? '1px solid var(--border-color)' : 'none',
+                      cursor: 'pointer',
+                      fontSize: '0.72rem',
+                      fontWeight: 'bold',
+                      letterSpacing: '1px',
+                      fontFamily: 'inherit',
+                      transition: 'background 0.15s',
+                    }}
+                  >
+                    {b}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="server-status">
+              <span>{currentState}</span>
+              <div className={`status-indicator ${currentState === 'online' ? 'online' : ''}`}></div>
+            </div>
           </div>
         </div>
 
@@ -1375,6 +1724,12 @@ function App() {
 
         {activeTab === 'custom' && (
           <CustomFileEditor notify={notify} />
+        )}
+
+        {activeTab === 'setup' && (
+          <div style={{ overflowY: 'auto', height: 'calc(100vh - 120px)', padding: '0 20px' }}>
+            <SetupWizard notify={notify} onFinish={() => { fetchInstances(); setActiveTab('dashboard'); }} />
+          </div>
         )}
 
         {activeTab === 'map' && (

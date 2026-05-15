@@ -34,7 +34,19 @@ contextBridge.exposeInMainWorld('pzAPI', {
   onPlayersUpdated: (callback) => {
     const handler = (_event, players) => callback(players);
     ipcRenderer.on('players-updated', handler);
-    // Return cleanup function
     return () => ipcRenderer.removeListener('players-updated', handler);
+  },
+
+  // Setup Wizard
+  checkSteamCmd: () => ipcRenderer.invoke('check-steamcmd'),
+  selectSteamCmd: () => ipcRenderer.invoke('select-steamcmd'),
+  getSteamCmdPath: () => ipcRenderer.invoke('get-steamcmd-path'),
+  selectInstallDir: () => ipcRenderer.invoke('select-install-dir'),
+  installPZServer: (steamcmdExe, installDir) => ipcRenderer.invoke('install-pz-server', { steamcmdExe, installDir }),
+  createServerInstance: (instanceName, config) => ipcRenderer.invoke('create-server-instance', { instanceName, config }),
+  onInstallLog: (callback) => {
+    const handler = (_event, line) => callback(line);
+    ipcRenderer.on('install-log', handler);
+    return () => ipcRenderer.removeListener('install-log', handler);
   },
 });
