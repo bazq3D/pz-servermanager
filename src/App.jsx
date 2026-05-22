@@ -10,20 +10,8 @@ function ModCard({ modName, workshopId: wIdProp, getReadableModName, setModTab, 
   const [imgUrl, setImgUrl] = useState(cachedImg || null);
 
   useEffect(() => {
-    if (!cachedImg && workshopId) {
-      fetch('https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `itemcount=1&publishedfileids%5B0%5D=${workshopId}`,
-      })
-        .then(r => r.json())
-        .then(data => {
-          const url = data?.response?.publishedfiledetails?.[0]?.preview_url;
-          if (url) { setImgUrl(url); onImageLoaded(workshopId, url); }
-        })
-        .catch(() => {});
-    }
-  }, [workshopId]);
+    setImgUrl(cachedImg || null);
+  }, [cachedImg]);
 
   return (
     <div
@@ -67,7 +55,7 @@ function ModCard({ modName, workshopId: wIdProp, getReadableModName, setModTab, 
   );
 }
 
-function WorkshopBrowser({ activeInstance, setActiveInstance, instances = [], serverBuild, modTab, setModTab, notify }) {
+function WorkshopBrowser({ activeInstance, setActiveInstance, instances = [], modTab, setModTab, notify }) {
   const webviewRef = useRef(null);
   const [currentUrl, setCurrentUrl] = useState('https://pzwiki.net/wiki/Mods');
   const [extractedModId, setExtractedModId] = useState(null);
@@ -93,16 +81,11 @@ function WorkshopBrowser({ activeInstance, setActiveInstance, instances = [], se
     });
   };
 
-  const [modImageCache, setModImageCache] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('pzsm_mod_images')) || {}; }
-    catch(e) { return {}; }
-  });
+  const [modImageCache, setModImageCache] = useState({});
 
   const saveImageToCache = (wId, url) => {
     setModImageCache(prev => {
-      const updated = { ...prev, [wId]: url };
-      localStorage.setItem('pzsm_mod_images', JSON.stringify(updated));
-      return updated;
+      return { ...prev, [wId]: url };
     });
   };
 
@@ -188,6 +171,18 @@ function WorkshopBrowser({ activeInstance, setActiveInstance, instances = [], se
     };
     fetchInstalled();
   }, [activeInstance]);
+
+  useEffect(() => {
+    if (!installedWorkshopIds.length || !window.pzAPI) return;
+    const missing = installedWorkshopIds.filter(id => id && !modImageCache[id]);
+    if (!missing.length) return;
+    window.pzAPI.fetchWorkshopImages(missing).then(results => {
+      setModImageCache(prev => ({
+        ...prev,
+        ...Object.fromEntries(Object.entries(results).filter(([, v]) => v))
+      }));
+    }).catch(() => {});
+  }, [installedWorkshopIds]);
 
   useEffect(() => {
     const webview = webviewRef.current;
@@ -324,17 +319,47 @@ function WorkshopBrowser({ activeInstance, setActiveInstance, instances = [], se
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 110px)' }}>
       {/* My Mods Grid - always mounted */}
       <div style={{ flex: 1, overflowY: 'auto', display: modTab === 'myMods' ? 'flex' : 'none', flexDirection: 'column' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexShrink: 0 }}>
-          <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-            {installedMods.length} mod{installedMods.length !== 1 ? 's' : ''} installed
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexShrink: 0, gap: '10px' }}>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flex: 1, minWidth: 0 }}>
+            {instances.map(inst => (
+              <button
+                key={inst}
+                onClick={() => setActiveInstance(inst)}
+                style={{
+                  padding: '4px 12px', fontSize: '0.75rem', fontWeight: 'bold', fontFamily: 'inherit',
+                  background: inst === activeInstance ? 'rgba(102,192,244,0.15)' : 'transparent',
+                  border: inst === activeInstance ? '1px solid var(--accent-blue)' : '1px solid var(--border-color)',
+                  color: inst === activeInstance ? 'var(--accent-blue)' : 'var(--text-muted)',
+                  borderRadius: '4px', cursor: 'pointer', whiteSpace: 'nowrap',
+                }}
+              >
+                {inst}
+              </button>
+            ))}
+            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginLeft: '4px' }}>
+              — {installedMods.length} mod{installedMods.length !== 1 ? 's' : ''}
+            </span>
           </div>
-          <button
-            className="btn btn-primary"
-            style={{ fontSize: '0.75rem', padding: '5px 12px' }}
-            onClick={() => setQuickInstallOpen(true)}
-          >
-            ⚡ QUICK INSTALL
-          </button>
+          <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+            <button
+              className="btn"
+              style={{ fontSize: '0.72rem', padding: '4px 10px', color: 'var(--text-muted)', border: '1px solid var(--border-color)' }}
+              title="Clear image cache and reload"
+              onClick={() => {
+                if (window.pzAPI?.clearWorkshopImageCache) window.pzAPI.clearWorkshopImageCache();
+                setModImageCache({});
+              }}
+            >
+              ↺ IMG
+            </button>
+            <button
+              className="btn btn-primary"
+              style={{ fontSize: '0.75rem', padding: '5px 12px' }}
+              onClick={() => setQuickInstallOpen(true)}
+            >
+              ⚡ QUICK INSTALL
+            </button>
+          </div>
         </div>
         {installedMods.length === 0 ? (
           <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '60px', fontSize: '0.9rem' }}>
@@ -515,13 +540,10 @@ function WorkshopBrowser({ activeInstance, setActiveInstance, instances = [], se
                     <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', marginBottom: '4px' }}>Target ID</div>
                     <div className="mod-info-chip">{extractedModId}</div>
                   </div>
-                  <div>
-                    <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', marginBottom: '4px' }}>Server Build</div>
-                    <div style={{ color: 'var(--accent-blue)', fontWeight: 'bold', fontSize: '0.9rem' }}>{serverBuild}</div>
-                  </div>
+
                   <div>
                     <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', marginBottom: '4px' }}>Mod Supports</div>
-                    <div style={{ color: modStatus.includes(serverBuild) ? 'var(--accent-green)' : (modStatus.includes('NOT SPECIFIED') || modStatus.includes('UNKNOWN') ? 'var(--accent-amber)' : 'var(--accent-red)'), fontWeight: '500', fontSize: '0.9rem' }}>
+                    <div style={{ color: modStatus.includes('NOT SPECIFIED') || modStatus.includes('UNKNOWN') ? 'var(--accent-amber)' : modStatus.startsWith('SUPPORTS') ? 'var(--accent-green)' : 'var(--accent-red)', fontWeight: '500', fontSize: '0.9rem' }}>
                       {modStatus}
                     </div>
                   </div>
@@ -554,6 +576,161 @@ function WorkshopBrowser({ activeInstance, setActiveInstance, instances = [], se
     </div>
   );
 }
+
+
+const SANDBOX_SCHEMA = [
+  { category: "WORLD", settings: [
+    { key: "Zombies", label: "Zombie Population", type: "select", options: [[1,"Insane"],[2,"Very High"],[3,"High"],[4,"Normal"],[5,"Low"]] },
+    { key: "Distribution", label: "Zombie Distribution", type: "select", options: [[1,"Urban Focused"],[2,"Uniform"]] },
+    { key: "DayLength", label: "Day Length", type: "select", options: [[1,"15 min"],[2,"30 min"],[3,"1 hr"],[4,"2 hr"],[5,"3 hr"],[6,"4 hr"],[7,"5 hr"],[8,"12 hr"],[9,"Real Time"],[10,"8 hr"],[11,"9 hr"],[12,"10 hr"],[13,"11 hr"],[14,"12 hr"],[15,"13 hr"],[16,"14 hr"],[17,"15 hr"],[18,"16 hr"],[19,"17 hr"],[20,"18 hr"],[21,"19 hr"],[22,"20 hr"],[23,"21 hr"],[24,"22 hr"],[25,"23 hr"]] },
+    { key: "StartYear", label: "Start Year", type: "number" },
+    { key: "StartMonth", label: "Start Month", type: "select", options: [[1,"January"],[2,"February"],[3,"March"],[4,"April"],[5,"May"],[6,"June"],[7,"July"],[8,"August"],[9,"September"],[10,"October"],[11,"November"],[12,"December"]] },
+    { key: "StartDay", label: "Start Day", type: "number" },
+    { key: "StartTime", label: "Start Time", type: "select", options: [[1,"7:00"],[2,"9:00"],[3,"12:00"],[4,"14:00"],[5,"17:00"],[6,"21:00"],[7,"00:00"],[8,"02:00"]] },
+    { key: "TimeSinceApo", label: "Time Since Apocalypse", type: "select", options: [[1,"0"],[2,"1"],[3,"2"],[4,"3"],[5,"4"],[6,"5"],[7,"6"],[8,"7"],[9,"8"],[10,"9"],[11,"10"],[12,"11"]] },
+    { key: "WaterShut", label: "Water Shut-off", type: "select", options: [[1,"Instant"],[2,"0-30 Days"],[3,"0-2 Months"],[4,"0-6 Months"],[5,"0-1 Year"],[6,"0-5 Years"],[7,"2-6 Months"]] },
+    { key: "WaterShutModifier", label: "Water Shut-off Day", type: "number" },
+    { key: "ElecShut", label: "Electricity Shut-off", type: "select", options: [[1,"Instant"],[2,"0-30 Days"],[3,"0-2 Months"],[4,"0-6 Months"],[5,"0-1 Year"],[6,"0-5 Years"],[7,"2-6 Months"]] },
+    { key: "ElecShutModifier", label: "Electricity Shut-off Day", type: "number" },
+  ]},
+  { category: "LOOT", settings: [
+    { key: "FoodLoot", label: "Food Loot", type: "select", options: [[1,"None"],[2,"Insanely Rare"],[3,"Very Rare"],[4,"Rare"],[5,"Normal"],[6,"Abundant"]] },
+    { key: "CannedFoodLoot", label: "Canned Food Loot", type: "select", options: [[1,"None"],[2,"Insanely Rare"],[3,"Very Rare"],[4,"Rare"],[5,"Normal"],[6,"Abundant"]] },
+    { key: "LiteratureLoot", label: "Literature Loot", type: "select", options: [[1,"None"],[2,"Insanely Rare"],[3,"Very Rare"],[4,"Rare"],[5,"Normal"],[6,"Abundant"]] },
+    { key: "SurvivalGearsLoot", label: "Survival Gear Loot", type: "select", options: [[1,"None"],[2,"Insanely Rare"],[3,"Very Rare"],[4,"Rare"],[5,"Normal"],[6,"Abundant"]] },
+    { key: "MedicalLoot", label: "Medical Loot", type: "select", options: [[1,"None"],[2,"Insanely Rare"],[3,"Very Rare"],[4,"Rare"],[5,"Normal"],[6,"Abundant"]] },
+    { key: "WeaponLoot", label: "Weapon Loot", type: "select", options: [[1,"None"],[2,"Insanely Rare"],[3,"Very Rare"],[4,"Rare"],[5,"Normal"],[6,"Abundant"]] },
+    { key: "RangedWeaponLoot", label: "Ranged Weapon Loot", type: "select", options: [[1,"None"],[2,"Insanely Rare"],[3,"Very Rare"],[4,"Rare"],[5,"Normal"],[6,"Abundant"]] },
+    { key: "AmmoLoot", label: "Ammo Loot", type: "select", options: [[1,"None"],[2,"Insanely Rare"],[3,"Very Rare"],[4,"Rare"],[5,"Normal"],[6,"Abundant"]] },
+    { key: "MechanicsLoot", label: "Mechanics Loot", type: "select", options: [[1,"None"],[2,"Insanely Rare"],[3,"Very Rare"],[4,"Rare"],[5,"Normal"],[6,"Abundant"]] },
+    { key: "OtherLoot", label: "Other Loot", type: "select", options: [[1,"None"],[2,"Insanely Rare"],[3,"Very Rare"],[4,"Rare"],[5,"Normal"],[6,"Abundant"]] },
+    { key: "LootRespawn", label: "Loot Respawn", type: "select", options: [[1,"Never"],[2,"Every Day"],[3,"Every Week"],[4,"Every Month"]] },
+    { key: "SeenHoursPreventLootRespawn", label: "Hours Seen Prevent Respawn", type: "number" },
+    { key: "HoursForWorldItemRemoval", label: "Hours Before Item Removal", type: "number" },
+    { key: "WorldItemRemovalList", label: "Item Removal List", type: "text" },
+    { key: "ItemRemovalListBlacklistToggle", label: "Removal List as Blacklist", type: "boolean" },
+  ]},
+  { category: "ENVIRONMENT", settings: [
+    { key: "Temperature", label: "Temperature", type: "select", options: [[1,"Very Cold"],[2,"Cold"],[3,"Normal"],[4,"Hot"]] },
+    { key: "Rain", label: "Rain Frequency", type: "select", options: [[1,"Very Dry"],[2,"Dry"],[3,"Normal"],[4,"Rainy"]] },
+    { key: "ErosionSpeed", label: "Erosion Speed", type: "select", options: [[1,"Very Fast (20d)"],[2,"Fast (50d)"],[3,"Normal (100d)"],[4,"Slow (200d)"]] },
+    { key: "ErosionDays", label: "Erosion Days (override, -1=use speed)", type: "number" },
+    { key: "FireSpread", label: "Fire Spread", type: "boolean" },
+    { key: "EnableSnowOnGround", label: "Snow on Ground", type: "boolean" },
+    { key: "MaxFogIntensity", label: "Max Fog Intensity", type: "select", options: [[1,"Normal"],[2,"Moderate"]] },
+    { key: "MaxRainFxIntensity", label: "Max Rain FX Intensity", type: "select", options: [[1,"Normal"],[2,"Moderate"]] },
+    { key: "Farming", label: "Plant Growth Rate", type: "select", options: [[1,"Very Fast"],[2,"Fast"],[3,"Normal"],[4,"Slow"]] },
+    { key: "PlantResilience", label: "Plant Resilience", type: "select", options: [[1,"Very High"],[2,"High"],[3,"Normal"],[4,"Low"]] },
+    { key: "PlantAbundance", label: "Plant Abundance", type: "select", options: [[1,"Very Poor"],[2,"Poor"],[3,"Normal"],[4,"Abundant"]] },
+    { key: "NatureAbundance", label: "Nature Abundance (fishing/foraging)", type: "select", options: [[1,"Very Poor"],[2,"Poor"],[3,"Normal"],[4,"Abundant"]] },
+    { key: "CompostTime", label: "Compost Time", type: "select", options: [[1,"1 Week"],[2,"2 Weeks"],[3,"3 Weeks"],[4,"4 Weeks"],[5,"6 Weeks"],[6,"8 Weeks"],[7,"10 Weeks"]] },
+    { key: "GeneratorSpawning", label: "Generator Spawning", type: "select", options: [[1,"Very Rarely"],[2,"Rarely"],[3,"Sometimes"],[4,"Often"]] },
+    { key: "GeneratorFuelConsumption", label: "Generator Fuel Consumption", type: "number" },
+    { key: "AllowExteriorGenerator", label: "Allow Exterior Generator", type: "boolean" },
+  ]},
+  { category: "SURVIVAL", settings: [
+    { key: "StatsDecrease", label: "Stats Decrease Rate", type: "select", options: [[1,"Very Fast"],[2,"Fast"],[3,"Normal"],[4,"Slow"]] },
+    { key: "Nutrition", label: "Nutrition Enabled", type: "boolean" },
+    { key: "FoodRotSpeed", label: "Food Rot Speed", type: "select", options: [[1,"Very Fast"],[2,"Fast"],[3,"Normal"],[4,"Slow"]] },
+    { key: "FridgeFactor", label: "Fridge Effectiveness", type: "select", options: [[1,"Very Low"],[2,"Low"],[3,"Normal"],[4,"High"]] },
+    { key: "DaysForRottenFoodRemoval", label: "Days Before Rotten Food Removed (-1=never)", type: "number" },
+    { key: "EndRegen", label: "Endurance Regen Rate", type: "select", options: [[1,"Very Fast"],[2,"Fast"],[3,"Normal"],[4,"Slow"]] },
+    { key: "InjurySeverity", label: "Injury Severity", type: "select", options: [[1,"Low"],[2,"Normal"]] },
+    { key: "BoneFracture", label: "Bone Fracture Enabled", type: "boolean" },
+    { key: "HoursForCorpseRemoval", label: "Hours Before Corpse Removal", type: "number" },
+    { key: "DecayingCorpseHealthImpact", label: "Corpse Health Impact", type: "select", options: [[1,"None"],[2,"Low"],[3,"Normal"]] },
+    { key: "BloodLevel", label: "Blood Level", type: "select", options: [[1,"None"],[2,"Low"],[3,"Normal"],[4,"High"]] },
+    { key: "ClothingDegradation", label: "Clothing Degradation", type: "select", options: [[1,"Off"],[2,"Slow"],[3,"Normal"]] },
+    { key: "StarterKit", label: "Starter Kit", type: "boolean" },
+    { key: "MaggotSpawn", label: "Maggot Spawn", type: "select", options: [[1,"Inside and Around"],[2,"Only Inside"]] },
+    { key: "EnablePoisoning", label: "Food Poisoning", type: "select", options: [[1,"Yes"],[2,"No"]] },
+    { key: "LightBulbLifespan", label: "Light Bulb Lifespan (0=unbreakable)", type: "number" },
+  ]},
+  { category: "GAMEPLAY", settings: [
+    { key: "XpMultiplier", label: "XP Multiplier", type: "number" },
+    { key: "XpMultiplierAffectsPassive", label: "XP Multiplier Affects Passive Skills", type: "boolean" },
+    { key: "CharacterFreePoints", label: "Character Free Points", type: "number" },
+    { key: "ConstructionBonusPoints", label: "Construction Bonus Points", type: "select", options: [[1,"Very Low"],[2,"Low"],[3,"Normal"],[4,"High"]] },
+    { key: "ZombieAttractionMultiplier", label: "Zombie Attraction Multiplier", type: "number" },
+    { key: "NightDarkness", label: "Night Darkness", type: "select", options: [[1,"Very Dark"],[2,"Dark"],[3,"Normal"]] },
+    { key: "NightLength", label: "Night Length", type: "select", options: [[1,"Always Night"],[2,"Long"],[3,"Normal"],[4,"Short"]] },
+    { key: "MultiHitZombies", label: "Multi-Hit Zombies", type: "boolean" },
+    { key: "RearVulnerability", label: "Rear Vulnerability", type: "select", options: [[1,"Low"],[2,"Medium"],[3,"High"]] },
+    { key: "AttackBlockMovements", label: "Attack Blocks Movement", type: "boolean" },
+    { key: "AllClothesUnlocked", label: "All Clothes Unlocked", type: "boolean" },
+    { key: "EnableTaintedWaterText", label: "Tainted Water Warning", type: "boolean" },
+  ]},
+  { category: "WORLD EVENTS", settings: [
+    { key: "Alarm", label: "Alarm Frequency", type: "select", options: [[1,"Never"],[2,"Very Rarely"],[3,"Rarely"],[4,"Sometimes"],[5,"Often"]] },
+    { key: "LockedHouses", label: "Locked Houses", type: "select", options: [[1,"Never"],[2,"Very Rarely"],[3,"Rarely"],[4,"Sometimes"],[5,"Often"],[6,"Very Often"]] },
+    { key: "Helicopter", label: "Helicopter Events", type: "select", options: [[1,"Never"],[2,"Once"],[3,"Sometimes"]] },
+    { key: "MetaEvent", label: "Meta Events", type: "select", options: [[1,"Never"],[2,"Sometimes"]] },
+    { key: "SleepingEvent", label: "Sleeping Events", type: "select", options: [[1,"Never"],[2,"Sometimes"]] },
+    { key: "SurvivorHouseChance", label: "Survivor House Chance", type: "select", options: [[1,"Never"],[2,"Very Rarely"],[3,"Rarely"],[4,"Sometimes"],[5,"Often"]] },
+    { key: "VehicleStoryChance", label: "Vehicle Story Chance", type: "select", options: [[1,"Never"],[2,"Very Rarely"],[3,"Rarely"],[4,"Sometimes"],[5,"Often"]] },
+    { key: "ZoneStoryChance", label: "Zone Story Chance", type: "select", options: [[1,"Never"],[2,"Very Rarely"],[3,"Rarely"],[4,"Sometimes"],[5,"Often"]] },
+    { key: "AnnotatedMapChance", label: "Annotated Map Chance", type: "select", options: [[1,"Never"],[2,"Very Rarely"],[3,"Rarely"],[4,"Sometimes"],[5,"Often"]] },
+  ]},
+  { category: "VEHICLES", settings: [
+    { key: "EnableVehicles", label: "Enable Vehicles", type: "boolean" },
+    { key: "VehicleEasyUse", label: "Easy Vehicle Use", type: "boolean" },
+    { key: "CarSpawnRate", label: "Car Spawn Rate", type: "select", options: [[1,"Never"],[2,"Low"],[3,"Normal"],[4,"High"]] },
+    { key: "CarGeneralCondition", label: "Car General Condition", type: "select", options: [[1,"Very Bad"],[2,"Bad"],[3,"Normal"],[4,"Good"]] },
+    { key: "ChanceHasGas", label: "Chance Has Gas", type: "select", options: [[1,"Low"],[2,"Normal"]] },
+    { key: "InitialGas", label: "Initial Gas Amount", type: "select", options: [[1,"Very Low"],[2,"Low"],[3,"Normal"],[4,"High"],[5,"Very High"]] },
+    { key: "FuelStationGas", label: "Fuel Station Gas", type: "select", options: [[1,"Empty"],[2,"Nearly Empty"],[3,"Very Low"],[4,"Low"],[5,"Normal"],[6,"High"],[7,"Very High"],[8,"Full"]] },
+    { key: "CarGasConsumption", label: "Car Gas Consumption", type: "number" },
+    { key: "LockedCar", label: "Locked Car Frequency", type: "select", options: [[1,"Never"],[2,"Very Rarely"],[3,"Rarely"],[4,"Sometimes"],[5,"Often"]] },
+    { key: "CarDamageOnImpact", label: "Car Damage on Impact", type: "select", options: [[1,"Very Low"],[2,"Low"],[3,"Normal"],[4,"High"]] },
+    { key: "DamageToPlayerFromHitByACar", label: "Player Damage from Car Hit", type: "select", options: [[1,"None"],[2,"Low"],[3,"Normal"],[4,"High"]] },
+    { key: "TrafficJam", label: "Traffic Jams", type: "boolean" },
+    { key: "CarAlarm", label: "Car Alarm Frequency", type: "select", options: [[1,"Never"],[2,"Very Rarely"],[3,"Rarely"],[4,"Sometimes"],[5,"Often"]] },
+    { key: "PlayerDamageFromCrash", label: "Player Damage from Crash", type: "boolean" },
+    { key: "SirenShutoffHours", label: "Siren Shutoff Hours (0=until battery dead)", type: "number" },
+    { key: "RecentlySurvivorVehicles", label: "Recently Survivor Vehicles", type: "select", options: [[1,"None"],[2,"Low"],[3,"Normal"]] },
+  ]},
+  { category: "ZOMBIE BEHAVIOUR", settings: [
+    { key: "ZombieLore.Speed", label: "Speed", type: "select", options: [[1,"Sprinters"],[2,"Fast Shamblers"],[3,"Shamblers"],[4,"Crawlers"]] },
+    { key: "ZombieLore.Strength", label: "Strength", type: "select", options: [[1,"Superhuman"],[2,"Normal"],[3,"Weak"]] },
+    { key: "ZombieLore.Toughness", label: "Toughness", type: "select", options: [[1,"Ironman"],[2,"Normal"],[3,"Fragile"]] },
+    { key: "ZombieLore.Transmission", label: "Transmission", type: "select", options: [[1,"Blood + Saliva"],[2,"Saliva Only"],[3,"Everyone Infected"],[4,"No Transmission"]] },
+    { key: "ZombieLore.Mortality", label: "Mortality", type: "select", options: [[1,"Instant"],[2,"0-30 seconds"],[3,"0-1 Minute"],[4,"0-12 Hours"],[5,"2-3 Days"],[6,"1-2 Weeks"]] },
+    { key: "ZombieLore.Reanimate", label: "Reanimate Speed", type: "select", options: [[1,"Instant"],[2,"0-30 seconds"],[3,"0-1 Minute"],[4,"0-12 Hours"],[5,"2-3 Days"]] },
+    { key: "ZombieLore.Cognition", label: "Cognition", type: "select", options: [[1,"Navigate + Use Doors"],[2,"Navigate"],[3,"Basic Navigation"]] },
+    { key: "ZombieLore.CrawlUnderVehicle", label: "Crawl Under Vehicles", type: "select", options: [[1,"Never"],[2,"Extremely Rarely"],[3,"Rarely"],[4,"Sometimes"],[5,"Often"],[6,"Very Often"]] },
+    { key: "ZombieLore.Memory", label: "Memory", type: "select", options: [[1,"Long"],[2,"Normal"],[3,"Short"],[4,"None"]] },
+    { key: "ZombieLore.Sight", label: "Sight", type: "select", options: [[1,"Eagle"],[2,"Normal"],[3,"Poor"]] },
+    { key: "ZombieLore.Hearing", label: "Hearing", type: "select", options: [[1,"Pinpoint"],[2,"Normal"],[3,"Poor"]] },
+    { key: "ZombieLore.ThumpNoChasing", label: "Thump Without Chasing", type: "boolean" },
+    { key: "ZombieLore.ThumpOnConstruction", label: "Thump on Player Construction", type: "boolean" },
+    { key: "ZombieLore.ActiveOnly", label: "Active Time", type: "select", options: [[1,"Both"],[2,"Night Only"],[3,"Day Only"]] },
+    { key: "ZombieLore.TriggerHouseAlarm", label: "Trigger House Alarms", type: "boolean" },
+    { key: "ZombieLore.ZombiesDragDown", label: "Zombies Drag Down Player", type: "boolean" },
+    { key: "ZombieLore.ZombiesFenceLunge", label: "Zombies Fence Lunge", type: "boolean" },
+    { key: "ZombieLore.DisableFakeDead", label: "Fake Dead Zombies", type: "select", options: [[1,"Some zombies play dead"],[2,"Some + killed zombies"]] },
+  ]},
+  { category: "ZOMBIE POPULATION", settings: [
+    { key: "ZombieConfig.PopulationMultiplier", label: "Population Multiplier", type: "number" },
+    { key: "ZombieConfig.PopulationStartMultiplier", label: "Start Multiplier", type: "number" },
+    { key: "ZombieConfig.PopulationPeakMultiplier", label: "Peak Multiplier", type: "number" },
+    { key: "ZombieConfig.PopulationPeakDay", label: "Peak Day", type: "number" },
+    { key: "ZombieConfig.RespawnHours", label: "Respawn Hours", type: "number" },
+    { key: "ZombieConfig.RespawnUnseenHours", label: "Respawn Unseen Hours", type: "number" },
+    { key: "ZombieConfig.RespawnMultiplier", label: "Respawn Multiplier", type: "number" },
+    { key: "ZombieConfig.RedistributeHours", label: "Redistribute Hours", type: "number" },
+    { key: "ZombieConfig.FollowSoundDistance", label: "Follow Sound Distance", type: "number" },
+    { key: "ZombieConfig.RallyGroupSize", label: "Rally Group Size", type: "number" },
+    { key: "ZombieConfig.RallyTravelDistance", label: "Rally Travel Distance", type: "number" },
+    { key: "ZombieConfig.RallyGroupSeparation", label: "Rally Group Separation", type: "number" },
+    { key: "ZombieConfig.RallyGroupRadius", label: "Rally Group Radius", type: "number" },
+  ]},
+  { category: "MAP", settings: [
+    { key: "Map.AllowMiniMap", label: "Allow Mini Map", type: "boolean" },
+    { key: "Map.AllowWorldMap", label: "Allow World Map", type: "boolean" },
+    { key: "Map.MapAllKnown", label: "Map All Known", type: "boolean" },
+  ]},
+];
+
 
 const CONFIG_SCHEMA = [
   {
@@ -682,232 +859,225 @@ const CONFIG_SCHEMA = [
 ];
 
 function ServerConfigTab({ activeInstance, notify }) {
+  const [configTab, setConfigTab] = useState('ini');
   const [config, setConfig] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [configLoading, setConfigLoading] = useState(true);
+  const [sandbox, setSandbox] = useState(null);
+  const [sandboxLoading, setSandboxLoading] = useState(true);
+  const [spawnRegions, setSpawnRegions] = useState(null);
+  const [spawnLoading, setSpawnLoading] = useState(true);
+  const [newRegion, setNewRegion] = useState({ name: '', file: '' });
 
   useEffect(() => {
-    const fetchConfig = async () => {
-      setLoading(true);
-      if (window.pzAPI && activeInstance) {
-        try {
-          const data = await window.pzAPI.getServerConfig(activeInstance);
-          setConfig(data);
-        } catch (err) {
-          console.error("Failed to load config", err);
-          setConfig(null);
-        }
-      } else {
-        setConfig(null);
-      }
-      setLoading(false);
-    };
-    fetchConfig();
+    if (!activeInstance) {
+      setConfig(null); setSandbox(null); setSpawnRegions(null);
+      setConfigLoading(false); setSandboxLoading(false); setSpawnLoading(false);
+      return;
+    }
+    if (window.pzAPI) {
+      setConfigLoading(true);
+      window.pzAPI.getServerConfig(activeInstance)
+        .then(d => { setConfig(d); setConfigLoading(false); })
+        .catch(() => { setConfig(null); setConfigLoading(false); });
+      setSandboxLoading(true);
+      window.pzAPI.getSandboxVars(activeInstance)
+        .then(d => { setSandbox(d && d.success ? d.vars : null); setSandboxLoading(false); })
+        .catch(() => { setSandbox(null); setSandboxLoading(false); });
+      setSpawnLoading(true);
+      window.pzAPI.getSpawnRegions(activeInstance)
+        .then(d => { setSpawnRegions(d && d.success ? d.regions : null); setSpawnLoading(false); })
+        .catch(() => { setSpawnRegions(null); setSpawnLoading(false); });
+    } else {
+      setConfigLoading(false); setSandboxLoading(false); setSpawnLoading(false);
+    }
   }, [activeInstance]);
 
-  if (loading) return <div>LOADING CONFIGURATION...</div>;
-  if (!activeInstance) return <div>NO INSTANCE SELECTED. PLEASE SELECT A SERVER FIRST.</div>;
-  if (!config) return <div>FAILED TO LOAD INI FILE FOR {activeInstance}.ini</div>;
+  if (!activeInstance) return <div style={{ padding: '20px', color: 'var(--text-muted)' }}>No instance selected.</div>;
 
-  const handleInputChange = (key, value) => {
-    setConfig(prev => ({ ...prev, [key]: value }));
+  const tabBtn = (key, label) => (
+    <button key={key} onClick={() => setConfigTab(key)} style={{ padding: '5px 14px', background: configTab === key ? 'rgba(102,192,244,0.15)' : 'transparent', border: 'none', borderBottom: configTab === key ? '2px solid var(--accent-blue)' : '2px solid transparent', color: configTab === key ? 'var(--accent-blue)' : 'var(--text-muted)', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 'bold', letterSpacing: '1px', fontFamily: 'inherit' }}>{label}</button>
+  );
+
+  const renderIniField = (setting, val, onChange) => {
+    if (setting.type === 'boolean') return (
+      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+        <input type="checkbox" checked={val === 'true'} onChange={e => onChange(e.target.checked ? 'true' : 'false')} />
+        <span style={{ color: val === 'true' ? 'var(--text-main)' : 'var(--text-muted)', fontSize: '0.85rem' }}>{val === 'true' ? 'TRUE' : 'FALSE'}</span>
+      </label>
+    );
+    if (setting.type === 'textarea') return <textarea value={val || ''} onChange={e => onChange(e.target.value)} className="url-bar" style={{ width: '100%', height: '60px', resize: 'vertical', outline: 'none', fontFamily: 'monospace' }} />;
+    return <input type={setting.type === 'number' ? 'number' : 'text'} value={val || ''} onChange={e => onChange(e.target.value)} className="url-bar" style={{ width: '100%', outline: 'none' }} />;
   };
 
-  const mappedKeys = new Set();
-  CONFIG_SCHEMA.forEach(section => {
-    section.settings.forEach(setting => mappedKeys.add(setting.key));
-  });
+  const renderSandboxField = (setting, val, onChange) => {
+    if (setting.type === 'select') return (
+      <select value={val ?? ''} onChange={e => onChange(e.target.value)} style={{ background: 'var(--bg-dark)', color: 'var(--text-main)', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '5px 8px', width: '100%', fontFamily: 'inherit', fontSize: '0.85rem' }}>
+        {setting.options.map(([v, lbl]) => <option key={v} value={v}>{lbl}</option>)}
+      </select>
+    );
+    if (setting.type === 'boolean') return (
+      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+        <input type="checkbox" checked={String(val) === 'true' || val === 1} onChange={e => onChange(e.target.checked ? 'true' : 'false')} />
+        <span style={{ fontSize: '0.85rem' }}>{String(val) === 'true' || val === 1 ? 'TRUE' : 'FALSE'}</span>
+      </label>
+    );
+    return <input type="number" value={val ?? ''} onChange={e => onChange(e.target.value)} className="url-bar" style={{ width: '100%', outline: 'none' }} />;
+  };
 
-  const unmappedKeys = Object.keys(config).filter(key => !mappedKeys.has(key));
+  const renderIniTab = () => {
+    if (configLoading) return <div style={{ padding: '20px', color: 'var(--text-muted)' }}>LOADING...</div>;
+    if (!config) return <div style={{ padding: '20px', color: 'var(--text-muted)' }}>Could not load {activeInstance}.ini</div>;
+    const handleChange = (key, value) => setConfig(prev => ({ ...prev, [key]: value }));
+    const mappedKeys = new Set(CONFIG_SCHEMA.flatMap(s => s.settings.map(st => st.key)));
+    const unmappedKeys = Object.keys(config).filter(k => !mappedKeys.has(k));
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+        {CONFIG_SCHEMA.map((section, idx) => (
+          <div key={idx} className="card" style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+            <h2 style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', color: 'var(--accent-blue)', fontSize: '0.9rem', margin: 0 }}>{section.category}</h2>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
+              {section.settings.map(s => (
+                <div key={s.key} style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                  <label style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: '500' }}>{s.label}</label>
+                  {renderIniField(s, config[s.key], v => handleChange(s.key, v))}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+        {unmappedKeys.length > 0 && (
+          <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+            <h2 style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', color: 'var(--accent-amber)', fontSize: '0.9rem', margin: 0 }}>MISCELLANEOUS</h2>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
+              {unmappedKeys.map(key => {
+                const value = config[key];
+                const isBool = value === 'true' || value === 'false';
+                return (
+                  <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                    <label style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: '500' }}>{key}</label>
+                    {isBool ? (
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={value === 'true'} onChange={e => handleChange(key, e.target.checked ? 'true' : 'false')} />
+                        <span style={{ color: value === 'true' ? 'var(--text-main)' : 'var(--text-muted)', fontSize: '0.85rem' }}>{value === 'true' ? 'TRUE' : 'FALSE'}</span>
+                      </label>
+                    ) : (
+                      <input type="text" value={value || ''} onChange={e => handleChange(key, e.target.value)} className="url-bar" style={{ width: '100%', outline: 'none' }} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: '10px' }}>
+          <button className="btn btn-primary" onClick={async () => {
+            if (!window.pzAPI) { notify('Not in Electron mode', 'warning'); return; }
+            const result = await window.pzAPI.saveServerConfig(activeInstance, config);
+            if (result && result.success) notify('server.ini saved', 'success');
+            else notify('Failed to save server.ini', 'error');
+          }}>SAVE CONFIGURATION</button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderSandboxTab = () => {
+    if (sandboxLoading) return <div style={{ padding: '20px', color: 'var(--text-muted)' }}>LOADING...</div>;
+    if (!sandbox) return <div style={{ padding: '20px', color: 'var(--text-muted)' }}>Sandbox vars file not found for {activeInstance}.</div>;
+    const handleChange = (key, value) => setSandbox(prev => ({ ...prev, [key]: value }));
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+        {SANDBOX_SCHEMA.map((section, idx) => (
+          <div key={idx} className="card" style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+            <h2 style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', color: 'var(--accent-blue)', fontSize: '0.9rem', margin: 0 }}>{section.category}</h2>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
+              {section.settings.map(s => (
+                <div key={s.key} style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                  <label style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: '500' }}>{s.label}</label>
+                  {renderSandboxField(s, sandbox[s.key], v => handleChange(s.key, v))}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: '10px' }}>
+          <button className="btn btn-primary" onClick={async () => {
+            if (!window.pzAPI) { notify('Not in Electron mode', 'warning'); return; }
+            const result = await window.pzAPI.saveSandboxVars(activeInstance, sandbox);
+            if (result && result.success) notify('Sandbox vars saved', 'success');
+            else notify('Failed to save sandbox vars', 'error');
+          }}>SAVE SANDBOX VARS</button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderSpawnTab = () => {
+    if (spawnLoading) return <div style={{ padding: '20px', color: 'var(--text-muted)' }}>LOADING...</div>;
+    if (!spawnRegions) return <div style={{ padding: '20px', color: 'var(--text-muted)' }}>Spawn regions file not found for {activeInstance}.</div>;
+    const removeRegion = (idx) => setSpawnRegions(prev => prev.filter((_, i) => i !== idx));
+    const addRegion = () => {
+      if (!newRegion.name.trim() || !newRegion.file.trim()) { notify('Name and file are required', 'error'); return; }
+      setSpawnRegions(prev => [...prev, { name: newRegion.name.trim(), file: newRegion.file.trim() }]);
+      setNewRegion({ name: '', file: '' });
+    };
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <h2 style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', color: 'var(--accent-blue)', fontSize: '0.9rem', margin: 0 }}>SPAWN REGIONS ({spawnRegions.length})</h2>
+          {spawnRegions.length === 0 && <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>No spawn regions defined.</div>}
+          {spawnRegions.map((region, idx) => (
+            <div key={idx} style={{ display: 'flex', gap: '10px', alignItems: 'center', padding: '10px', background: 'rgba(0,0,0,0.2)', borderRadius: '4px', border: '1px solid var(--border-color)' }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ color: 'var(--text-main)', fontSize: '0.88rem', fontWeight: 'bold' }}>{region.name}</div>
+                <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontFamily: 'monospace', marginTop: '2px' }}>{region.file}</div>
+              </div>
+              <button onClick={() => removeRegion(idx)} style={{ background: 'transparent', border: 'none', color: '#ff4757', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center' }}>
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <h2 style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', color: 'var(--accent-amber)', fontSize: '0.9rem', margin: 0 }}>ADD REGION</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+              <label style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>Region Name</label>
+              <input value={newRegion.name} onChange={e => setNewRegion(p => ({ ...p, name: e.target.value }))} placeholder="e.g. Muldraugh, KY" className="url-bar" style={{ width: '100%', outline: 'none' }} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+              <label style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>File Path</label>
+              <input value={newRegion.file} onChange={e => setNewRegion(p => ({ ...p, file: e.target.value }))} placeholder="media/maps/.../spawnpoints.lua" className="url-bar" style={{ width: '100%', outline: 'none' }} />
+            </div>
+          </div>
+          <button className="btn btn-success" style={{ alignSelf: 'flex-start' }} onClick={addRegion}>+ ADD REGION</button>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: '10px' }}>
+          <button className="btn btn-primary" onClick={async () => {
+            if (!window.pzAPI) { notify('Not in Electron mode', 'warning'); return; }
+            const result = await window.pzAPI.saveSpawnRegions(activeInstance, spawnRegions);
+            if (result && result.success) notify('Spawn regions saved', 'success');
+            else notify('Failed to save spawn regions', 'error');
+          }}>SAVE SPAWN REGIONS</button>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-      {CONFIG_SCHEMA.map((section, idx) => (
-        <div key={idx} className="card" style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-          <h2 style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', color: 'var(--accent-blue)', fontSize: '0.9rem', margin: 0 }}>
-            {section.category}
-          </h2>
-          
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
-            {section.settings.map((setting) => (
-              <div key={setting.key} style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                <label style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: '500' }}>{setting.label}</label>
-                
-                {setting.type === 'boolean' && (
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                    <input 
-                      type="checkbox" 
-                      checked={config?.[setting.key] === 'true'} 
-                      onChange={(e) => handleInputChange(setting.key, e.target.checked ? 'true' : 'false')}
-                    />
-                    <span style={{ color: config?.[setting.key] === 'true' ? 'var(--text-main)' : 'var(--text-muted)', fontSize: '0.85rem' }}>
-                      {config?.[setting.key] === 'true' ? 'TRUE' : 'FALSE'}
-                    </span>
-                  </label>
-                )}
-
-                {(setting.type === 'text' || setting.type === 'number') && (
-                  <input 
-                    type={setting.type} 
-                    value={config?.[setting.key] || ''} 
-                    onChange={(e) => handleInputChange(setting.key, e.target.value)}
-                    className="url-bar" 
-                    style={{ width: '100%', outline: 'none' }} 
-                  />
-                )}
-
-                {setting.type === 'textarea' && (
-                  <textarea 
-                    value={config?.[setting.key] || ''}
-                    onChange={(e) => handleInputChange(setting.key, e.target.value)}
-                    className="url-bar" 
-                    style={{ width: '100%', height: '60px', resize: 'vertical', outline: 'none', fontFamily: 'monospace' }}
-                  />
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
-
-      {unmappedKeys.length > 0 && (
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-          <h2 style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', color: 'var(--accent-amber)', fontSize: '0.9rem', margin: 0 }}>
-            MISCELLANEOUS (UNCATEGORIZED)
-          </h2>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
-            {unmappedKeys.map(key => {
-              const value = config[key];
-              const isBoolean = value === 'true' || value === 'false';
-              
-              return (
-                <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                  <label style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: '500' }}>{key}</label>
-                  {isBoolean ? (
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                      <input 
-                        type="checkbox" 
-                        checked={value === 'true'} 
-                        onChange={(e) => handleInputChange(key, e.target.checked ? 'true' : 'false')}
-                      />
-                      <span style={{ color: value === 'true' ? 'var(--text-main)' : 'var(--text-muted)', fontSize: '0.85rem' }}>
-                        {value === 'true' ? 'TRUE' : 'FALSE'}
-                      </span>
-                    </label>
-                  ) : (
-                    <input 
-                      type="text" 
-                      value={value || ''} 
-                      onChange={(e) => handleInputChange(key, e.target.value)}
-                      className="url-bar" 
-                      style={{ width: '100%', outline: 'none' }} 
-                    />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: '10px' }}>
-        <button className="btn btn-primary" onClick={() => notify('Save not yet fully implemented', 'warning')}>
-          SAVE CONFIGURATION
-        </button>
+      <div style={{ display: 'flex', gap: '2px', borderBottom: '1px solid var(--border-color)', marginBottom: '5px' }}>
+        {tabBtn('ini', 'SERVER.INI')}
+        {tabBtn('sandbox', 'SANDBOX VARS')}
+        {tabBtn('spawn', 'SPAWN REGIONS')}
       </div>
+      {configTab === 'ini' && renderIniTab()}
+      {configTab === 'sandbox' && renderSandboxTab()}
+      {configTab === 'spawn' && renderSpawnTab()}
     </div>
   );
 }
 
-function CustomFileEditor({ notify }) {
-  const [filePath, setFilePath] = useState(null);
-  const [content, setContent] = useState('');
-  const [originalContent, setOriginalContent] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
-
-  const handleSelectFile = async () => {
-    if (window.pzAPI) {
-      const result = await window.pzAPI.selectCustomFile();
-      if (result) {
-        setFilePath(result.filePath);
-        setContent(result.content);
-        setOriginalContent(result.content);
-      }
-    }
-  };
-
-  const handleSaveFile = async () => {
-    if (window.pzAPI && filePath) {
-      setIsSaving(true);
-      const success = await window.pzAPI.saveCustomFile(filePath, content);
-      setIsSaving(false);
-      if (success) {
-        setOriginalContent(content);
-        notify('File saved successfully', 'success');
-      } else {
-        notify('Failed to save file', 'error');
-      }
-    }
-  };
-
-  const hasChanges = content !== originalContent;
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: 'calc(100vh - 120px)' }}>
-      <div className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ flex: 1, overflow: 'hidden' }}>
-          <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', marginBottom: '5px' }}>
-            TARGET FILE
-          </div>
-          <div style={{ color: filePath ? 'var(--accent-blue)' : 'var(--text-muted)', fontSize: '0.9rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'monospace' }}>
-            {filePath ? filePath : 'No file selected...'}
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <button className="btn btn-primary" onClick={handleSelectFile}>
-            <Folder size={16} style={{ display: 'inline', verticalAlign: 'text-bottom', marginRight: '5px' }} /> 
-            BROWSE FILE
-          </button>
-          <button 
-            className={hasChanges ? "btn btn-success" : "btn"} 
-            style={!hasChanges ? { backgroundColor: 'var(--bg-panel-hover)', cursor: 'not-allowed', color: 'var(--text-muted)' } : {}}
-            onClick={handleSaveFile}
-            disabled={!hasChanges || isSaving}
-          >
-            {isSaving ? 'SAVING...' : 'SAVE CHANGES'}
-          </button>
-        </div>
-      </div>
-
-      <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}>
-        <div style={{ padding: '10px 15px', borderBottom: '1px solid var(--border-color)', backgroundColor: 'rgba(0,0,0,0.2)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-          RAW TEXT EDITOR
-        </div>
-        <textarea 
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          disabled={!filePath}
-          spellCheck="false"
-          style={{ 
-            flex: 1, 
-            width: '100%', 
-            padding: '15px', 
-            backgroundColor: 'var(--bg-panel)', 
-            color: 'var(--text-main)', 
-            border: 'none', 
-            outline: 'none', 
-            fontFamily: 'Consolas, monospace', 
-            fontSize: '0.9rem',
-            resize: 'none',
-            whiteSpace: 'pre',
-            overflowWrap: 'normal',
-            overflowX: 'auto'
-          }}
-          placeholder={filePath ? "Start typing..." : "Please browse and select a file to edit..."}
-        />
-      </div>
-    </div>
-  );
-}
 
 function SetupWizard({ onFinish, notify }) {
   const [step, setStep] = useState(0);
@@ -1150,6 +1320,303 @@ function SetupWizard({ onFinish, notify }) {
   );
 }
 
+
+function ServerControlPanel({ activeInstance, serverState, notify }) {
+  const [customCmd, setCustomCmd] = useState('');
+  const [selectedPlayer, setSelectedPlayer] = useState('');
+
+  const cmd = async (command) => {
+    if (!window.pzAPI) { notify('Not in Electron mode', 'warning'); return; }
+    const r = await window.pzAPI.sendServerCommand(activeInstance, command);
+    if (r.success) notify('> ' + command, 'info');
+    else notify(r.error || 'Command failed', 'error');
+  };
+
+  if (serverState !== 'online') return null;
+
+  const btnStyle = (color) => ({
+    padding: '5px 12px', fontSize: '0.75rem', fontWeight: 'bold', letterSpacing: '0.5px',
+    border: `1px solid ${color}40`, borderRadius: '4px', cursor: 'pointer', fontFamily: 'inherit',
+    background: `${color}15`, color: color, transition: 'background 0.15s',
+  });
+
+  return (
+    <div className="card" style={{ padding: '12px', flexShrink: 0 }}>
+      <div style={{ fontSize: '0.72rem', color: 'var(--accent-blue)', letterSpacing: '1px', marginBottom: '10px' }}>SERVER COMMANDS</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+
+        {/* Weather */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', width: '64px', flexShrink: 0 }}>WEATHER</span>
+          <button style={btnStyle('#66c0f4')} onClick={() => cmd('startrain')}>Start Rain</button>
+          <button style={btnStyle('#66c0f4')} onClick={() => cmd('stoprain')}>Stop Rain</button>
+          <button style={btnStyle('#66c0f4')} onClick={() => cmd('startstorm')}>Start Storm</button>
+          <button style={btnStyle('#66c0f4')} onClick={() => cmd('stopstorm')}>Stop Storm</button>
+          <button style={btnStyle('#ffb347')} onClick={() => cmd('lightning')}>Lightning</button>
+          <button style={btnStyle('#ffb347')} onClick={() => cmd('thunder')}>Thunder</button>
+        </div>
+
+        {/* Events */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', width: '64px', flexShrink: 0 }}>EVENTS</span>
+          <button style={btnStyle('#a4d007')} onClick={() => cmd('chopper')}>Helicopter</button>
+          <button style={btnStyle('#a4d007')} onClick={() => cmd('gunshot')}>Gunshot</button>
+          <button style={btnStyle('#a4d007')} onClick={() => cmd('alarm')}>Alarm</button>
+          <button style={btnStyle('#a4d007')} onClick={() => cmd('sendpulse')}>World Pulse</button>
+        </div>
+
+        {/* Custom */}
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+          <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', width: '64px', flexShrink: 0 }}>CUSTOM</span>
+          <input
+            value={customCmd}
+            onChange={e => setCustomCmd(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && customCmd.trim()) { cmd(customCmd.trim()); setCustomCmd(''); } }}
+            placeholder="e.g. createhorde 20"
+            className="url-bar"
+            style={{ flex: 1, outline: 'none', fontFamily: 'monospace', fontSize: '0.8rem' }}
+          />
+          <button
+            className="btn btn-primary"
+            style={{ fontSize: '0.75rem', padding: '4px 12px' }}
+            onClick={() => { if (customCmd.trim()) { cmd(customCmd.trim()); setCustomCmd(''); } }}
+          >
+            SEND
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function PlayersAdminTab({ activeInstance, serverState, livePlayers, notify }) {
+  const [selected, setSelected] = useState(null);
+  const [manualName, setManualName] = useState('');
+  const [accessLevel, setAccessLevel] = useState('none');
+  const [itemId, setItemId] = useState('');
+  const [vehicleType, setVehicleType] = useState('Base.VehicleMcAdam4');
+  const [hordeCount, setHordeCount] = useState(20);
+  const [xpPerk, setXpPerk] = useState('Fitness');
+  const [xpAmount, setXpAmount] = useState(100);
+  const [tpTarget, setTpTarget] = useState('');
+  const [customCmd, setCustomCmd] = useState('');
+
+  const targetName = selected || manualName.trim();
+
+  const cmd = async (command) => {
+    if (!window.pzAPI) { notify('Not in Electron mode', 'warning'); return; }
+    if (serverState !== 'online') { notify('Server is not running', 'error'); return; }
+    const r = await window.pzAPI.sendServerCommand(activeInstance, command);
+    if (r.success) notify('> ' + command, 'info');
+    else notify(r.error || 'Command failed', 'error');
+  };
+
+  const requireTarget = (fn) => {
+    if (!targetName) { notify('Select a player or type a name', 'error'); return; }
+    fn();
+  };
+
+  const inputStyle = {
+    background: 'var(--bg-dark)', color: 'var(--text-main)', border: '1px solid var(--border-color)',
+    borderRadius: '4px', padding: '5px 8px', fontFamily: 'inherit', fontSize: '0.83rem', width: '100%', boxSizing: 'border-box',
+  };
+  const sectionLabel = { fontSize: '0.68rem', color: 'var(--accent-blue)', letterSpacing: '1px', marginBottom: '8px', borderBottom: '1px solid var(--border-color)', paddingBottom: '5px' };
+  const btnRow = { display: 'flex', gap: '6px', flexWrap: 'wrap' };
+
+  const ACTION_LEVELS = ['none', 'observer', 'gm', 'overseer', 'moderator', 'admin'];
+
+  const PERKS = ['Fitness','Strength','Agility','Sprinting','Lightfooted','Nimble','Sneaking',
+    'Axe','Blunt','SmallBlunt','LongBlade','SmallBlade','Spear','Maintenance',
+    'Woodwork','Cooking','Farming','FirstAid','Electrical','Mechanics','MetalWelding',
+    'Tailoring','Aiming','Reloading','Fishing','Trapping','PlantTending'];
+
+  return (
+    <div style={{ display: 'flex', gap: '16px', height: 'calc(100vh - 130px)', overflow: 'hidden' }}>
+
+      {/* Left: Player List */}
+      <div className="card" style={{ width: '220px', flexShrink: 0, display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}>
+        <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)', background: 'rgba(0,0,0,0.2)' }}>
+          <div style={{ fontSize: '0.8rem', color: 'var(--accent-blue)', fontWeight: 'bold', letterSpacing: '1px' }}>
+            ONLINE PLAYERS ({livePlayers.length})
+          </div>
+          {livePlayers.length === 0 && (
+            <div style={{ fontSize: '0.68rem', color: 'var(--accent-amber)', marginTop: '4px' }}>
+              Connect tracker for live list
+            </div>
+          )}
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {livePlayers.map((p, i) => (
+            <div
+              key={i}
+              onClick={() => setSelected(selected === p.name ? null : p.name)}
+              style={{
+                padding: '9px 14px', cursor: 'pointer', borderBottom: '1px solid rgba(255,255,255,0.03)',
+                background: selected === p.name ? 'rgba(102,192,244,0.1)' : 'transparent',
+                borderLeft: selected === p.name ? '2px solid var(--accent-blue)' : '2px solid transparent',
+                transition: 'background 0.1s',
+              }}
+            >
+              <div style={{ fontSize: '0.85rem', fontWeight: 'bold', color: selected === p.name ? 'var(--accent-blue)' : 'var(--text-main)' }}>{p.name}</div>
+              <div style={{ fontSize: '0.68rem', color: p.status === 'Healthy' ? 'var(--accent-green)' : 'var(--accent-amber)', marginTop: '2px' }}>
+                {p.status}{p.hp !== undefined ? ` · HP:${p.hp}` : ''}
+              </div>
+            </div>
+          ))}
+          {livePlayers.length === 0 && (
+            <div style={{ padding: '16px 14px', fontSize: '0.78rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+              No players tracked
+            </div>
+          )}
+        </div>
+        <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border-color)' }}>
+          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: '4px' }}>Manual player name</div>
+          <input
+            value={manualName}
+            onChange={e => { setManualName(e.target.value); setSelected(null); }}
+            placeholder="PlayerName"
+            style={{ ...inputStyle, fontSize: '0.78rem' }}
+          />
+        </div>
+      </div>
+
+      {/* Right: Actions */}
+      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+
+        {/* Target indicator */}
+        <div className="card" style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>TARGET:</div>
+          <div style={{ fontSize: '0.9rem', fontWeight: 'bold', color: targetName ? 'var(--accent-blue)' : 'var(--text-muted)' }}>
+            {targetName || 'None selected'}
+          </div>
+          {serverState !== 'online' && (
+            <div style={{ marginLeft: 'auto', fontSize: '0.72rem', color: 'var(--accent-red)', border: '1px solid var(--accent-red)40', padding: '2px 8px', borderRadius: '3px' }}>
+              SERVER OFFLINE
+            </div>
+          )}
+        </div>
+
+        {/* Moderation */}
+        <div className="card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={sectionLabel}>MODERATION</div>
+          <div style={btnRow}>
+            <button className="btn btn-danger" style={{ fontSize: '0.75rem' }} onClick={() => requireTarget(() => cmd(`kick "${targetName}"`))}> Kick</button>
+            <button className="btn btn-danger" style={{ fontSize: '0.75rem' }} onClick={() => requireTarget(() => cmd(`ban "${targetName}"`))}> Ban</button>
+            <button className="btn" style={{ fontSize: '0.75rem', color: 'var(--accent-green)', border: '1px solid var(--accent-green)40' }} onClick={() => requireTarget(() => cmd(`unban "${targetName}"`))}> Unban</button>
+          </div>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', flexShrink: 0 }}>Access Level:</div>
+            <select value={accessLevel} onChange={e => setAccessLevel(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
+              {ACTION_LEVELS.map(l => <option key={l} value={l}>{l}</option>)}
+            </select>
+            <button className="btn btn-primary" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }} onClick={() => requireTarget(() => cmd(`setaccesslevel "${targetName}" ${accessLevel}`))}>
+              Set Level
+            </button>
+          </div>
+        </div>
+
+        {/* Teleport */}
+        <div className="card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={sectionLabel}>TELEPORT</div>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn btn-primary" style={{ fontSize: '0.75rem' }} onClick={() => requireTarget(() => cmd(`teleport "${targetName}"`))}> TP to safehouse</button>
+          </div>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', flexShrink: 0 }}>TP to player:</div>
+            <input value={tpTarget} onChange={e => setTpTarget(e.target.value)} placeholder="TargetPlayer" style={{ ...inputStyle, flex: 1 }} />
+            <button className="btn btn-primary" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}
+              onClick={() => requireTarget(() => { if (!tpTarget.trim()) { notify('Enter target player', 'error'); return; } cmd(`teleport "${targetName}" "${tpTarget.trim()}"`); })}>
+              TP
+            </button>
+          </div>
+        </div>
+
+        {/* XP */}
+        <div className="card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={sectionLabel}>ADD XP</div>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <select value={xpPerk} onChange={e => setXpPerk(e.target.value)} style={{ ...inputStyle, flex: 2 }}>
+              {PERKS.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+            <input type="number" value={xpAmount} onChange={e => setXpAmount(e.target.value)} min="1" style={{ ...inputStyle, width: '80px', flex: 'none' }} />
+            <button className="btn btn-primary" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }} onClick={() => requireTarget(() => cmd(`addxp "${targetName}" ${xpPerk}=${xpAmount}`))}>
+              Add XP
+            </button>
+          </div>
+        </div>
+
+        {/* Items */}
+        <div className="card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={sectionLabel}>ADD ITEM</div>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <input value={itemId} onChange={e => setItemId(e.target.value)} placeholder="Base.Axe" style={{ ...inputStyle, flex: 1 }} />
+            <button className="btn btn-primary" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}
+              onClick={() => requireTarget(() => { if (!itemId.trim()) { notify('Enter item ID', 'error'); return; } cmd(`additem "${targetName}" ${itemId.trim()}`); })}>
+              Add Item
+            </button>
+          </div>
+          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+            Examples: Base.Axe · Base.HandTorch · Base.Pistol · Base.BriefcaseWhite
+          </div>
+        </div>
+
+        {/* Vehicles */}
+        <div className="card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={sectionLabel}>SPAWN VEHICLE</div>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <input value={vehicleType} onChange={e => setVehicleType(e.target.value)} placeholder="Base.VehicleMcAdam4" style={{ ...inputStyle, flex: 1 }} />
+            <button className="btn btn-primary" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}
+              onClick={() => requireTarget(() => cmd(`addvehicle ${vehicleType.trim()} "${targetName}"`))} >
+              Spawn
+            </button>
+          </div>
+          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+            Examples: Base.VehicleMcAdam4 · Base.VehicleTrailer · Base.VehiclePickUpTruck
+          </div>
+        </div>
+
+        {/* World / Horde */}
+        <div className="card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={sectionLabel}>WORLD ACTIONS</div>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', flexShrink: 0 }}>Create horde:</div>
+            <input type="number" value={hordeCount} onChange={e => setHordeCount(e.target.value)} min="1" max="500" style={{ ...inputStyle, width: '70px', flex: 'none' }} />
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', flexShrink: 0 }}>near</div>
+            <div style={{ flex: 1, fontSize: '0.8rem', color: targetName ? 'var(--accent-blue)' : 'var(--text-muted)', fontStyle: targetName ? 'normal' : 'italic' }}>
+              {targetName || 'select player'}
+            </div>
+            <button className="btn btn-danger" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }} onClick={() => requireTarget(() => cmd(`createhorde ${hordeCount} "${targetName}"`))}>
+              Spawn Horde
+            </button>
+          </div>
+          <div style={btnRow}>
+            <button className="btn" style={{ fontSize: '0.75rem', color: '#ffb347', border: '1px solid #ffb34740' }} onClick={() => requireTarget(() => cmd(`lightning "${targetName}"`))}> Lightning</button>
+            <button className="btn" style={{ fontSize: '0.75rem', color: '#ffb347', border: '1px solid #ffb34740' }} onClick={() => requireTarget(() => cmd(`thunder "${targetName}"`))}> Thunder</button>
+            <button className="btn" style={{ fontSize: '0.75rem', color: 'var(--accent-green)', border: '1px solid var(--accent-green)40' }} onClick={() => requireTarget(() => cmd(`godmode "${targetName}"`))}>God Mode</button>
+          </div>
+        </div>
+
+        {/* Raw command */}
+        <div className="card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div style={sectionLabel}>RAW COMMAND</div>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <input
+              value={customCmd}
+              onChange={e => setCustomCmd(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && customCmd.trim()) { cmd(customCmd.trim()); setCustomCmd(''); } }}
+              placeholder='e.g. additem "PlayerName" Base.Hammer'
+              style={{ ...inputStyle, flex: 1, fontFamily: 'monospace' }}
+            />
+            <button className="btn btn-primary" style={{ fontSize: '0.75rem' }} onClick={() => { if (customCmd.trim()) { cmd(customCmd.trim()); setCustomCmd(''); } }}>SEND</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
 function Sparkline({ data = [], color = '#66c0f4', height = 40 }) {
   if (data.length < 2) return <div style={{ height: `${height}px` }} />;
   const max = Math.max(...data, 1);
@@ -1185,10 +1652,7 @@ function App() {
   const [serverExePath, setServerExePath] = useState(null);
   const [serverStates, setServerStates] = useState({});
   const [serverLogs, setServerLogs] = useState({});
-  const [serverBuilds, setServerBuilds] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('pzsm_server_builds')) || {}; }
-    catch(e) { return {}; }
-  });
+
   const [modTab, setModTab] = useState('myMods');
   const [serverStats, setServerStats] = useState({});
   const [notifications, setNotifications] = useState([]);
@@ -1429,31 +1893,16 @@ function App() {
         <div className="server-selector">
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '5px', textTransform: 'uppercase' }}>Active Instance</div>
           {instances.length > 0 ? (
-            <div style={{ display: 'flex', gap: '5px', marginBottom: '10px' }}>
-              <select 
-                className="server-dropdown" 
-                value={activeInstance}
-                onChange={(e) => setActiveInstance(e.target.value)}
-                style={{ flex: 1, minWidth: 0, margin: 0 }}
-              >
-                {instances.map(inst => (
-                  <option key={inst} value={inst}>{inst}</option>
-                ))}
-              </select>
-              <select
-                value={serverBuilds[activeInstance] || 'B41'}
-                onChange={(e) => {
-                  const nb = { ...serverBuilds, [activeInstance]: e.target.value };
-                  setServerBuilds(nb);
-                  localStorage.setItem('pzsm_server_builds', JSON.stringify(nb));
-                }}
-                style={{ width: '60px', padding: '0 5px', background: 'var(--bg-dark)', color: 'var(--text-main)', border: '1px solid var(--border-color)', borderRadius: '4px' }}
-                title="Server Build Version"
-              >
-                <option value="B41">B41</option>
-                <option value="B42">B42</option>
-              </select>
-            </div>
+            <select 
+              className="server-dropdown" 
+              value={activeInstance}
+              onChange={(e) => setActiveInstance(e.target.value)}
+              style={{ marginBottom: '10px' }}
+            >
+              {instances.map(inst => (
+                <option key={inst} value={inst}>{inst}</option>
+              ))}
+            </select>
           ) : (
             <div style={{ color: 'var(--accent-red)', fontSize: '0.8rem', marginBottom: '10px' }}>No servers found.</div>
           )}
@@ -1501,12 +1950,7 @@ function App() {
           >
             LIVE MAP
           </div>
-          <div
-            className={`nav-item ${activeTab === 'custom' ? 'active' : ''}`}
-            onClick={() => setActiveTab('custom')}
-          >
-            CUSTOM FILES
-          </div>
+
           <div style={{ flex: 1 }} />
           <div
             className={`nav-item ${activeTab === 'setup' ? 'active' : ''}`}
@@ -1556,36 +2000,7 @@ function App() {
             )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div style={{ display: 'flex', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
-              {['B41', 'B42'].map(b => {
-                const active = (serverBuilds[activeInstance] || 'B41') === b;
-                return (
-                  <button
-                    key={b}
-                    onClick={() => {
-                      const nb = { ...serverBuilds, [activeInstance]: b };
-                      setServerBuilds(nb);
-                      localStorage.setItem('pzsm_server_builds', JSON.stringify(nb));
-                    }}
-                    style={{
-                      padding: '3px 11px',
-                      background: active ? 'var(--accent-blue)' : 'transparent',
-                      color: active ? '#0d1117' : 'var(--text-muted)',
-                      border: 'none',
-                      borderRight: b === 'B41' ? '1px solid var(--border-color)' : 'none',
-                      cursor: 'pointer',
-                      fontSize: '0.72rem',
-                      fontWeight: 'bold',
-                      letterSpacing: '1px',
-                      fontFamily: 'inherit',
-                      transition: 'background 0.15s',
-                    }}
-                  >
-                    {b}
-                  </button>
-                );
-              })}
-            </div>
+
             <div className="server-status">
               <span>{currentState}</span>
               <div className={`status-indicator ${currentState === 'online' ? 'online' : ''}`}></div>
@@ -1683,6 +2098,9 @@ function App() {
                     </button>
                   </div>
 
+                  {/* Server Commands */}
+                  <ServerControlPanel activeInstance={activeInstance} serverState={currentState} notify={notify} />
+
                   {/* Console */}
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
                     <div style={{ fontSize: '0.78rem', color: 'var(--accent-blue)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '1px', flexShrink: 0 }}>
@@ -1715,16 +2133,18 @@ function App() {
         )}
 
         {activeTab === 'mods' && (
-          <WorkshopBrowser activeInstance={activeInstance} setActiveInstance={setActiveInstance} instances={instances} serverBuild={serverBuilds[activeInstance] || 'B41'} modTab={modTab} setModTab={setModTab} notify={notify} />
+          <WorkshopBrowser activeInstance={activeInstance} setActiveInstance={setActiveInstance} instances={instances} modTab={modTab} setModTab={setModTab} notify={notify} />
         )}
 
         {activeTab === 'config' && (
           <ServerConfigTab activeInstance={activeInstance} notify={notify} />
         )}
 
-        {activeTab === 'custom' && (
-          <CustomFileEditor notify={notify} />
+        {activeTab === 'players' && (
+          <PlayersAdminTab activeInstance={activeInstance} serverState={currentState} livePlayers={livePlayers} notify={notify} />
         )}
+
+
 
         {activeTab === 'setup' && (
           <div style={{ overflowY: 'auto', height: 'calc(100vh - 120px)', padding: '0 20px' }}>

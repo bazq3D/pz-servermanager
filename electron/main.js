@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { spawn } from 'child_process';
+import https from 'https';
 import { PZIniParser } from './iniParser.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -233,6 +234,108 @@ ipcMain.handle('get-server-states', () => {
   return states;
 });
 
+// Persistent workshop image cache — loaded lazily on first use (app must be ready)
+let _workshopCache = null;
+let _workshopCachePath = null;
+
+const getWorkshopCache = () => {
+  if (_workshopCache !== null) return _workshopCache;
+  _workshopCachePath = path.join(app.getPath('userData'), 'workshop-image-cache.json');
+  try {
+    _workshopCache = fs.existsSync(_workshopCachePath)
+      ? JSON.parse(fs.readFileSync(_workshopCachePath, 'utf-8'))
+      : {};
+  } catch { _workshopCache = {}; }
+  return _workshopCache;
+};
+
+const saveWorkshopCache = () => {
+  try { fs.writeFileSync(_workshopCachePath, JSON.stringify(_workshopCache), 'utf-8'); } catch {}
+};
+
+// Batch fetch preview URLs from Steam Web API (single POST for all IDs)
+const fetchWorkshopImagesFromSteam = (ids) => new Promise((resolve) => {
+  const postData = `itemcount=${ids.length}&${ids.map((id, i) => `publishedfileids[${i}]=${id}`).join('&')}`;
+  const req = https.request({
+    hostname: 'api.steampowered.com',
+    path: '/ISteamRemoteStorage/GetPublishedFileDetails/v1/',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Length': Buffer.byteLength(postData),
+      'User-Agent': 'Mozilla/5.0'
+    }
+  }, (res) => {
+    let data = '';
+    res.on('data', chunk => { data += chunk; });
+    res.on('end', () => {
+      try {
+        const json = JSON.parse(data);
+        const files = json?.response?.publishedfiledetails || [];
+        const result = {};
+        for (const f of files) {
+          if (f.preview_url) result[String(f.publishedfileid)] = f.preview_url;
+        }
+        resolve(result);
+      } catch { resolve({}); }
+    });
+  });
+  req.on('error', () => resolve({}));
+  req.write(postData);
+  req.end();
+});
+
+ipcMain.handle('clear-workshop-image-cache', async () => {
+  _workshopCache = {};
+  if (_workshopCachePath) {
+    try { fs.writeFileSync(_workshopCachePath, '{}', 'utf-8'); } catch {}
+  }
+  return { success: true };
+});
+
+ipcMain.handle('fetch-workshop-image', async (event, workshopId) => {
+  const cache = getWorkshopCache();
+  const key = String(workshopId);
+  if (cache[key]) return cache[key];
+  const results = await fetchWorkshopImagesFromSteam([key]);
+  if (results[key]) {
+    cache[key] = results[key];
+    saveWorkshopCache();
+  }
+  return results[key] || null;
+});
+
+ipcMain.handle('fetch-workshop-images', async (event, workshopIds) => {
+  const cache = getWorkshopCache();
+  const missing = workshopIds.filter(id => !cache[String(id)]);
+  if (missing.length) {
+    const fetched = await fetchWorkshopImagesFromSteam(missing.map(String));
+    let changed = false;
+    for (const [id, url] of Object.entries(fetched)) {
+      cache[id] = url;
+      changed = true;
+    }
+    if (changed) saveWorkshopCache();
+  }
+  const result = {};
+  for (const id of workshopIds) {
+    const key = String(id);
+    if (cache[key]) result[key] = cache[key];
+  }
+  return result;
+});
+
+ipcMain.handle('send-server-command', async (event, { instanceName, command }) => {
+  const child = runningServers[instanceName];
+  if (!child) return { success: false, error: 'Server not running.' };
+  try {
+    child.stdin.write(command + '\n');
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
 ipcMain.handle('select-custom-file', async (event) => {
   const window = BrowserWindow.getFocusedWindow();
   const { canceled, filePaths } = await dialog.showOpenDialog(window, {
@@ -316,6 +419,103 @@ ipcMain.handle('stop-players-watcher', async () => {
   }
   watchedPlayersPath = null;
   return true;
+});
+
+// --- Lua file helpers ---
+
+function parseSandboxVars(content) {
+  const result = {};
+  const tableRegex = /\b(\w+)\s*=\s*\{([^{}]+)\}/g;
+  let m;
+  while ((m = tableRegex.exec(content)) !== null) {
+    const tableName = m[1];
+    if (tableName === 'SandboxVars') continue;
+    const kvRe = /\b(\w+)\s*=\s*([^,\r\n]+)/g;
+    let kv;
+    while ((kv = kvRe.exec(m[2])) !== null) {
+      const k = kv[1].trim();
+      const v = kv[2].trim().replace(/,\s*$/, '').replace(/--.*$/, '').trim();
+      if (k && !k.startsWith('--')) result[`${tableName}.${k}`] = v;
+    }
+  }
+  const topLevel = content.replace(/\b\w+\s*=\s*\{[^{}]+\}/g, '');
+  const kvRe = /\b(\w+)\s*=\s*([^,\r\n]+)/g;
+  let kv;
+  while ((kv = kvRe.exec(topLevel)) !== null) {
+    const k = kv[1].trim();
+    const v = kv[2].trim().replace(/,\s*$/, '').replace(/--.*$/, '').trim();
+    if (k && !k.startsWith('--') && k !== 'SandboxVars' && k !== 'VERSION') result[k] = v;
+  }
+  return result;
+}
+
+function applyLuaUpdates(content, updates) {
+  const lines = content.split(/\r?\n/);
+  const result = [];
+  for (let line of lines) {
+    if (line.trim().startsWith('--')) { result.push(line); continue; }
+    let newLine = line;
+    for (const [dotKey, value] of Object.entries(updates)) {
+      const key = dotKey.includes('.') ? dotKey.split('.').pop() : dotKey;
+      const re = new RegExp(`^(\\s*${key}\\s*=\\s*)([^,\\r\\n]+)(,?)(\\s*(?:--.*)?$)`);
+      const hit = newLine.match(re);
+      if (hit) { newLine = `${hit[1]}${value}${hit[3]}${hit[4]}`; break; }
+    }
+    result.push(newLine);
+  }
+  return result.join('\n');
+}
+
+function parseSpawnRegions(content) {
+  const regions = [];
+  const re = /\{\s*name\s*=\s*"([^"]+)",\s*file\s*=\s*"([^"]+)"\s*\}/g;
+  let m;
+  while ((m = re.exec(content)) !== null) regions.push({ name: m[1], file: m[2] });
+  return regions;
+}
+
+function buildSpawnRegions(regions) {
+  const lines = regions.map(r => `\t\t{ name = "${r.name}", file = "${r.file}" },`);
+  return `function SpawnRegions()\n\treturn {\n${lines.join('\n')}\n\t}\nend\n`;
+}
+
+// --- Config / Sandbox / Spawn Region IPC ---
+
+ipcMain.handle('save-server-config', async (event, { instanceName, config }) => {
+  const targetPath = getIniPath(instanceName);
+  if (!targetPath || !fs.existsSync(targetPath)) return { success: false, error: 'File not found' };
+  const parser = new PZIniParser(targetPath);
+  for (const [k, v] of Object.entries(config)) parser.set(k, String(v));
+  return { success: parser.save() };
+});
+
+ipcMain.handle('get-sandbox-vars', async (event, instanceName) => {
+  const filePath = path.join(getZomboidServerDir(), `${instanceName}_SandboxVars.lua`);
+  if (!fs.existsSync(filePath)) return { success: false, vars: {} };
+  try { return { success: true, vars: parseSandboxVars(fs.readFileSync(filePath, 'utf8')) }; }
+  catch (e) { return { success: false, vars: {}, error: e.message }; }
+});
+
+ipcMain.handle('save-sandbox-vars', async (event, { instanceName, updates }) => {
+  const filePath = path.join(getZomboidServerDir(), `${instanceName}_SandboxVars.lua`);
+  if (!fs.existsSync(filePath)) return { success: false, error: 'File not found' };
+  try {
+    fs.writeFileSync(filePath, applyLuaUpdates(fs.readFileSync(filePath, 'utf8'), updates), 'utf8');
+    return { success: true };
+  } catch (e) { return { success: false, error: e.message }; }
+});
+
+ipcMain.handle('get-spawn-regions', async (event, instanceName) => {
+  const filePath = path.join(getZomboidServerDir(), `${instanceName}_spawnregions.lua`);
+  if (!fs.existsSync(filePath)) return { success: false, regions: [] };
+  try { return { success: true, regions: parseSpawnRegions(fs.readFileSync(filePath, 'utf8')) }; }
+  catch (e) { return { success: false, regions: [], error: e.message }; }
+});
+
+ipcMain.handle('save-spawn-regions', async (event, { instanceName, regions }) => {
+  const filePath = path.join(getZomboidServerDir(), `${instanceName}_spawnregions.lua`);
+  try { fs.writeFileSync(filePath, buildSpawnRegions(regions), 'utf8'); return { success: true }; }
+  catch (e) { return { success: false, error: e.message }; }
 });
 
 // --- Setup Wizard IPC ---

@@ -12,6 +12,10 @@ contextBridge.exposeInMainWorld('pzAPI', {
   startServer: (instanceName) => ipcRenderer.invoke('start-server', instanceName),
   stopServer: (instanceName) => ipcRenderer.invoke('stop-server', instanceName),
   getServerStates: () => ipcRenderer.invoke('get-server-states'),
+  sendServerCommand: (instanceName, command) => ipcRenderer.invoke('send-server-command', { instanceName, command }),
+  fetchWorkshopImage: (workshopId) => ipcRenderer.invoke('fetch-workshop-image', workshopId),
+  fetchWorkshopImages: (workshopIds) => ipcRenderer.invoke('fetch-workshop-images', workshopIds),
+  clearWorkshopImageCache: () => ipcRenderer.invoke('clear-workshop-image-cache'),
   onServerLog: (callback) => {
     const handler = (_event, data) => callback(data);
     ipcRenderer.on('server-log', handler);
@@ -36,6 +40,13 @@ contextBridge.exposeInMainWorld('pzAPI', {
     ipcRenderer.on('players-updated', handler);
     return () => ipcRenderer.removeListener('players-updated', handler);
   },
+
+  // Config / Sandbox / Spawn Regions
+  saveServerConfig: (instanceName, config) => ipcRenderer.invoke('save-server-config', { instanceName, config }),
+  getSandboxVars: (instanceName) => ipcRenderer.invoke('get-sandbox-vars', instanceName),
+  saveSandboxVars: (instanceName, updates) => ipcRenderer.invoke('save-sandbox-vars', { instanceName, updates }),
+  getSpawnRegions: (instanceName) => ipcRenderer.invoke('get-spawn-regions', instanceName),
+  saveSpawnRegions: (instanceName, regions) => ipcRenderer.invoke('save-spawn-regions', { instanceName, regions }),
 
   // Setup Wizard
   checkSteamCmd: () => ipcRenderer.invoke('check-steamcmd'),
